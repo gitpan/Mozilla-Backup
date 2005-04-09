@@ -1,0 +1,31 @@
+This file contains message digests of all files listed in MANIFEST,
+signed via the Module::Signature module, version 0.44.
+
+To verify the content in this distribution, first make sure you have
+Module::Signature installed, then type:
+
+    % cpansign -v
+
+It will check each file's integrity, as well as the signature's
+validity.  If "==> Signature verified OK! <==" is not displayed,
+the distribution may already have been compromised, and you should
+not run its Makefile.PL or Build.PL.
+
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
+
+SHA1 d8aff058c76defe6f5ea99967ca38910f30def21 Build.PL
+SHA1 9441f3947c41703313d90d7919f16c5920d31e61 Changes
+SHA1 a8fed70d8305fd332acabeff52fbf4e3c9c87681 MANIFEST
+SHA1 2b95cd8a9e592fc735db26347fc75209d5bf3744 META.yml
+SHA1 94c07a30a9e6b8c6aa87f289c74dd40e8911962c Makefile.PL
+SHA1 d62f15ff0a7ba8844a3bc1e1ea491ada0fb6586a README
+SHA1 d3ecf84e385158bb27ba18d977d0d605fa9b5411 lib/Mozilla/Backup.pm
+SHA1 319c4e80bb77de6125e41a872864e3f336ff00bb t/Mozilla-Backup.t
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.2.5 (MingW32)
+
+iD8DBQFCV0zMV485gMKcmRARAkI2AJ0ZZEJVO2uck7qGj5XlwRg3FhduJgCdESs+
+kDgx94khISDqTi1pQ13uc20=
+=0DYk
+-----END PGP SIGNATURE-----
