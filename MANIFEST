@@ -6,4 +6,6 @@ META.yml
 README
 t/Mozilla-Backup.t
 lib/Mozilla/Backup.pm
+bin/mozback
+
 SIGNATURE    Added here by Module::Build

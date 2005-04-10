@@ -15,6 +15,7 @@ my $build = Module::Build->new
        'Params::Validate' => 0,
      },
      recommends => {
+       'Getopt::Long'     => 0,      # for script
 #        'Test::Pod::Coverage' => 0,
 #        'Test::Pod'      => 1.00,
 #        'Test::Prereq'   => 0,

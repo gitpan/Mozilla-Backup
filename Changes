@@ -1,6 +1,27 @@
 Revision history for Perl extension Mozilla::Backup.
 
-0.02
+0.03  Sun Apr 10 2005
+	- added mozback script prototype
+	- added profile_types method
+	- smarter code for finding where profiles are
+	* profile_section renamed to profile_id
+	- added callbacks for using different archive formats
+	- added profile_exists method
+	- backup_profile dies if profile_is_locked
+	- added profile_is_locked method
+	- validation of other methods
+	- more tests
+	- option to control whether backups use relative pathnames
+        - defaults not to use relative pathnames when profile's
+          IsRelative flag is not set
+	- misc code comments/tweaks
+        - added Netscape profile
+	- added Camino profile
+	- added K-Meleon profile
+	- added Phoenix profile (though not likely to be used)
+
+0.02  Sat Apr  9 2005
+	- released
 	- lots of tweaking
 
 0.01  Fri Apr  8 2005

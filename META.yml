@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name: Mozilla-Backup
-version: 0.02
+version: 0.03
 author:
   - Robert Rothenberg <rrwo at cpan.org>
 abstract: Backup utility for Mozilla profiles
@@ -14,11 +14,13 @@ requires:
   Log::Dispatch: 1.6
   Params::Validate: 0
   perl: 5.6.0
+recommends:
+  Getopt::Long: 0
 build_requires:
   File::Temp: 0
   Test::More: 0
 provides:
   Mozilla::Backup:
     file: lib/Mozilla/Backup.pm
-    version: 0.02
+    version: 0.03
 generated_by: Module::Build version 0.2607

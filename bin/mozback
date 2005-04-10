@@ -1,0 +1,73 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Carp;
+use Getopt::Long;
+use Log::Dispatch;
+use Log::Dispatch::Screen;
+use Mozilla::Backup 0.03;
+
+our $VERSION = '0.01';
+
+my $Help   = 0;
+my $List   = 0;
+my $Backup = 0;
+
+my $Type = "firefox";              # profile type (e.g. "firefox")
+my $Name = "default";              # profile name (e.g. "default")
+my $Path = ".";
+
+unless (GetOptions("type=s" => \$Type,
+                   "name=s" => \$Name,  
+                   "backup" => \$Backup,
+                   "path=s" => \$Path,
+                   "help|h" => \$Help,
+                   "list|l" => \$List,
+		  )) {
+  $Help = 1;
+}
+
+if ($Help) {
+print STDERR << "USAGE";
+Usage: mozback [options]
+  --help       show this screen
+  --list       list available profile types and names
+  --backup     backup a profile
+  --type       type of profile (defaults to "$Type")
+  --name       name of profile (defaults to "$Name")
+  --path       path to save backup (defaults to current directory)
+USAGE
+  exit(1);
+}
+
+my $Log = Log::Dispatch->new;
+
+$Log->add( Log::Dispatch::Screen->new( name => 'screen',
+                                       min_level => 'notice',
+                                       stderr => 1,
+));
+
+if ($List) {
+  my $moz = Mozilla::Backup->new( log => $Log );
+  foreach my $type (sort $moz->found_profile_types) {
+    foreach my $name (sort $moz->profile_names($type)) {
+      print sprintf("%-16s %-16s\n", $type, $name);
+    }
+  }
+}
+elsif ($Backup) {
+  my $moz = Mozilla::Backup->new( log => $Log );
+  if ($moz->profile_exists($Type,$Name)) {
+    if (-d $Path) {
+      $moz->backup_profile($Type,$Name,$Path);
+    } else {
+      croak $Log->log( level => "error", message => "$Path does not exist" );
+    }
+  }
+  else {
+    croak $Log->log( level => "error",
+		     message => "Cannot find $Type profile caled $Name");
+  }
+}

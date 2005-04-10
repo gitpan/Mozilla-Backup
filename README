@@ -18,23 +18,61 @@ DESCRIPTION
     Mozilla-related applications.
 
     new
-          $moz = Mozilla::Backup->new( log => $log );
+          $moz = Mozilla::Backup->new( %options );
 
-        Creates a new Mozilla::Backup object. $log is an optional
-        Log::Dispatch object.
+        Creates a new Mozilla::Backup object. The options are as follows:
+
+        log A Log::Dispatch object for receiving log messages.
+
+        new_arch
+            A callback for creating a new archive, which receives the
+            following arguments: "($moz, $path, %opts)".
+
+            $moz is the Mozilla::Backup object.
+
+            $path is the pathname of the archive.
+
+            <%opts> are options specific to the archive format.
+
+            You may save state in the "$moz-"{archive}->{user}> key.
+
+            On success it returns a true value.
+
+        add_arch
+            A callback for adding a file to the archive, which receives the
+            following arguments: "$moz, $local_file, $archive_file".
+
+        end_arch
+            A callback for saving and closing the archive. It receives the
+            following arguments: $moz.
+
+    profile_types
+          @types = $moz->profile_types;
+
+        Returns a list of all profile types that are supported by this
+        version of the module.
+
+        Supported profile types:
+
+          camino
+          firefox
+          galeon
+          kmeleon
+          mozilla
+          phoenix
+          netscape
+          sunbird
+          thunderbird
+
+        Some of these profile types are for platform-specific applications,
+        so you may never run into them.
 
     found_profile_types
           @types = $moz->found_profile_types();
 
         Returns a list of applications for which profiles were found. (This
-        does not mean that the applications are installed on the machine.)
-
-        Supported profile types:
-
-          firefox
-          mozilla
-          sunbird
-          thunderbird
+        does not mean that the applications are installed on the machine,
+        only that profiles were found where they were expected.)
 
     ini_file
           $file = $moz->ini_file($type);
@@ -51,18 +89,28 @@ DESCRIPTION
 
         Returns the pathname of the profile.
 
+    profile_exists
+          if ($moz->profile_exists($type,$name)) { ... }
+
+        Returns true if a profile exists.
+
     profile_is_relative
           if ($moz->profile_is_relative($type,$name)) { ... }
 
         Returns the 'IsRelative' flag for the profile.
 
-    profile_section
-          $section = $moz->profile_section($type,$name);
+    profile_id
+          $section = $moz->profile_id($type,$name);
 
-        Returns the "ini_file" section of the profile.
+        Returns the "ini_file" identifier of the profile.
+
+    profile_is_locked
+          if ($moz->profile_is_locked($type,$name)) { ... }
+
+        Returns true if there is a lock file in the profile.
 
     backup_profile
-          $file = $moz->backup_profile($type,$name,$dest,$arch);
+          $file = $moz->backup_profile($type,$name,$dest,$arch,$rel);
 
         Backs up the profile as a zip archive to the path specified in
         $dest. (If none is given, the current directory is assumed.)
@@ -70,8 +118,16 @@ DESCRIPTION
         $arch is an optional name for the archive file. If none is given, it
         assumes type-name-date-time.zip.
 
+        $rel is an optional flag to backup files with relative paths instead
+        of absolute pathnames. It defaults to the value of
+        "profile_is_relative" for that profile. (Non-relative profiles will
+        show a warning message.)
+
         If the profile is currently in use, it may not be backed up
         properly.
+
+        This version does no munging of the profile data at all. It simply
+        stores the files in an archive.
 
     restore_profile
         Not yet implemented.
@@ -79,7 +135,8 @@ DESCRIPTION
 CAVEATS
     This module is a prototype. Use at your own risk!
 
-    Only Windows 2000/XP machines are supported in this version.
+    Not all of the profile types have been tested, and are implemented based
+    on information gleaned from sources which may or may not be accurate.
 
 SEE ALSO
     Mozilla web site at <http://www.mozilla.org>.
