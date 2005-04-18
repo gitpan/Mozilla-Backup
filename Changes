@@ -1,5 +1,40 @@
 Revision history for Perl extension Mozilla::Backup.
 
+0.04  Mon Apr 18 2005
+	- added and revised tests
+	- updated mozback script
+	- _load_profile sub separated from constructor
+	- documentation for FileCopy plugin
+	- fixed issue with relative paths in FileCopy plugin
+	- fixed bug that wiped pseudo profiles between sessions
+	- various code tweaks
+	- fixed bug that ignored all but last profile in profile.ini
+	- documentation for Zip plugin
+	- renamed methods required for plugins
+	- added FileCopy plugin
+	- uses File::Copy
+	- debug flag adds screen output to log dispatcher
+	- added various parameter and sanity checks
+	- added internal _validate_type and _validate_profile methods
+	- test tweaks
+	- uses Params::Smart
+	- moved log messages to plugin
+	- implemented restore_profile method
+	- added debug flag
+	- tests are now only on the pseudo profile
+	- added documentation of internal methods
+	- added pseudo option to create pseudo profile type (for testing)
+	- File::Temp now required for pseudo-profiles
+	- added internal methods to create new profiles
+	- added profile_exists method
+	- fixed bug with croak/carp errors [rt.cpan.org #12234]
+	- changed to use plugins instead of callbacks (callbacks removed!)
+	- uses Module::Pluggable
+	- various code comments
+	- recognizes Windows-native Moz profiles in Cygwin
+	- updated README
+	- updated documentation to show SourceForge project site
+
 0.03  Sun Apr 10 2005
 	- added mozback script prototype
 	- added profile_types method

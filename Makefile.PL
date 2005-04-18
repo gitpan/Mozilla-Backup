@@ -8,14 +8,20 @@ WriteMakefile
                            'Archive::Zip' => '0',
                            'Carp' => '0',
                            'Config::IniFiles' => '0',
+                           'File::Copy' => '0',
                            'File::Find' => '0',
                            'File::Spec' => '0',
                            'File::Temp' => '0',
                            'Log::Dispatch' => '1.6',
+                           'Module::Pluggable' => '0',
+                           'Params::Smart' => '0.03',
                            'Params::Validate' => '0',
                            'Test::More' => '0'
                          },
           'INSTALLDIRS' => 'site',
+          'EXE_FILES' => [
+                           'bin/mozback'
+                         ],
           'PL_FILES' => {}
         )
 ;

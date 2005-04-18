@@ -7,24 +7,32 @@ use Carp;
 use Getopt::Long;
 use Log::Dispatch;
 use Log::Dispatch::Screen;
-use Mozilla::Backup 0.03;
+use Mozilla::Backup 0.04;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02'; # $Revision: 1.2 $
 
-my $Help   = 0;
-my $List   = 0;
-my $Backup = 0;
+my $Help    = 0;
+my $List    = 0;
+my $Backup  = 0;
+my $Restore = 0;
 
-my $Type = "firefox";              # profile type (e.g. "firefox")
-my $Name = "default";              # profile name (e.g. "default")
-my $Path = ".";
+my $Type    = "firefox";              # profile type (e.g. "firefox")
+my $Name    = "default";              # profile name (e.g. "default")
+my $Path    = ".";
+my $Plugin  = "Zip",
 
-unless (GetOptions("type=s" => \$Type,
-                   "name=s" => \$Name,  
-                   "backup" => \$Backup,
-                   "path=s" => \$Path,
-                   "help|h" => \$Help,
-                   "list|l" => \$List,
+my $Quiet   = 0;
+
+
+unless (GetOptions("type=s"   => \$Type,
+                   "name=s"   => \$Name,  
+                   "backup"   => \$Backup,
+                   "restore"  => \$Restore,
+                   "path=s"   => \$Path,
+                   "plugin=s" => \$Plugin,
+                   "help|h"   => \$Help,
+                   "list|l"   => \$List,
+                   "quiet|q"  => \$Quiet,
 		  )) {
   $Help = 1;
 }
@@ -35,9 +43,12 @@ Usage: mozback [options]
   --help       show this screen
   --list       list available profile types and names
   --backup     backup a profile
+  --restore    restore a profile
+  --plugin     backup plugin (defaults to "$Plugin")
   --type       type of profile (defaults to "$Type")
   --name       name of profile (defaults to "$Name")
   --path       path to save backup (defaults to current directory)
+  --quiet      quite mode (no output)
 USAGE
   exit(1);
 }
@@ -47,7 +58,7 @@ my $Log = Log::Dispatch->new;
 $Log->add( Log::Dispatch::Screen->new( name => 'screen',
                                        min_level => 'notice',
                                        stderr => 1,
-));
+)) unless ($Quiet);
 
 if ($List) {
   my $moz = Mozilla::Backup->new( log => $Log );
@@ -58,16 +69,50 @@ if ($List) {
   }
 }
 elsif ($Backup) {
-  my $moz = Mozilla::Backup->new( log => $Log );
-  if ($moz->profile_exists($Type,$Name)) {
+  my $moz = Mozilla::Backup->new(
+    log    => $Log,
+    plugin => "Mozilla::Backup::Plugin::$Plugin",
+  );
+  if ($moz->profile_exists( type => $Type, name => $Name)) {
     if (-d $Path) {
-      $moz->backup_profile($Type,$Name,$Path);
+      $moz->backup_profile(
+        type => $Type,
+        name => $Name,
+        destination => $Path
+      );
     } else {
-      croak $Log->log( level => "error", message => "$Path does not exist" );
+      croak msg( level => "error", message => "$Path does not exist\n" );
     }
   }
   else {
-    croak $Log->log( level => "error",
-		     message => "Cannot find $Type profile caled $Name");
+    croak msg( level => "error",
+	       message => "Cannot find $Type profile caled $Name\n");
   }
+}
+elsif ($Restore) {
+  my $moz = Mozilla::Backup->new(
+    log    => $Log,
+    plugin => "Mozilla::Backup::Plugin::$Plugin",
+  );
+  if (-e $Path) {
+    if ($moz->type_exists( type => $Type )) {
+      $moz->restore_profile(
+        archive_path => $Path,
+        type => $Type,
+        name => $Name,
+      );
+    }
+    else {
+      croak msg( level => "error", message => "$Type is not a valid type\n" );
+    }
+  }
+  else {
+      croak msg( level => "error", message => "$Path does not exist\n" );
+  }
+}
+
+sub msg {
+  my %p = @_;
+  $Log->log(%p);
+  return $p{message};
 }

@@ -4,8 +4,13 @@ Makefile.PL
 MANIFEST
 META.yml
 README
+t/01-compile.t
+t/01-pod.t
+t/01-pod-coverage.t
 t/Mozilla-Backup.t
 lib/Mozilla/Backup.pm
+lib/Mozilla/Backup/Plugin/Zip.pm
+lib/Mozilla/Backup/Plugin/FileCopy.pm
 bin/mozback
 
 SIGNATURE    Added here by Module::Build
