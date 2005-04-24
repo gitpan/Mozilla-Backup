@@ -1,5 +1,36 @@
 Revision history for Perl extension Mozilla::Backup.
 
+0.05  Sun Apr 24 2005
+	* moved various functions from *::Backup to *::ProfilesIni
+	  (using AUTOLOAD for deprecated function calls)
+	- added type method
+	- added (disabled) prereq test
+	- added file portability tests
+	- fixed bug with adding non-default profiles
+	- fixed inconsistency with create_profile and profile_path
+	- first profile created in a new ini file is always default
+	- added Mozilla::ProfilesIni
+	- added missing modules to pod-coverage test
+	- additional tests
+	- misc optimizations
+	- fixed issue with newlines missing from croaked log messages
+	- exclusions effect restore_profile method as well
+	- user-configurable file exclusions
+	- uses Regexp::Assemble
+	- extensions are no longer ignored by default
+	- improved lock file detection
+	- added compression option for Zip plugin
+	- added ability to pass options to plugin
+	- added Tar plugin
+	- uses Archive::Tar
+	- chmod 0700 for mkdir calls
+	- Default and StartWithLastProfile attributes updated appropriately
+	- additional documentation/code tweaks
+	- added profile_is_default method
+	- additional error checking for profiles
+	- support Default attribute for profiles
+	- corrected typo in FileCopy.pm POD
+
 0.04  Mon Apr 18 2005
 	- added and revised tests
 	- updated mozback script

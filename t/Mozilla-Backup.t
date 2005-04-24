@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# $Revision: 1.11 $
+# $Revision: 1.13 $
 
 use strict;
 use Test::More tests => 15;
@@ -16,7 +16,8 @@ ok(defined $moz, "new (no options)");
 
 $moz = new Mozilla::Backup(
   pseudo => $tmpdir,
-  debug => 0,
+  debug  => 0,
+  plugin => [ 'Mozilla::Backup::Plugin::Zip', compression => 6 ],
 );
 ok(defined $moz, "new");
 
@@ -41,27 +42,28 @@ foreach my $type (qw( pseudo )) {
  SKIP: {
     skip "No $type profiles found", 10 unless ($moz->type_exists($type));
 
-    my @profs = $moz->profile_names($type);
+    my @profs = $moz->type($type)->profile_names();
     ok(@profs, "$type profile_names");
 
-    ok(-r $moz->ini_file($type), "ini_file");
+    ok(-r $moz->type($type)->ini_file, "ini_file");
 
     my $name  = $profs[0];
-    ok($moz->profile_exists($type,$name), "$name profile exists");
+    ok($moz->type($type)->profile_exists($name), "$name profile exists");
 
     skip "No profile found for type", 7
-      unless ($moz->profile_exists($type,$name));
+      unless ($moz->type($type)->profile_exists($name));
 
-    ok(-d $moz->profile_path($type,$name), "profile_path");
+    ok(-d $moz->type($type)->profile_path($name), "profile_path");
 
-    ok(defined $moz->profile_is_relative($type,$name), "profile_is_relative");
+    ok(defined $moz->type($type)->profile_is_relative($name), "profile_is_relative");
 
-    ok($moz->profile_id($type,$name), "profile_id");
+    ok($moz->type($type)->profile_id($name), "profile_id");
 
     my $arch = $moz->_archive_name($type,$name);
     ok($arch =~ /^$type\-$name\-\d{8}\-\d{6}\.zip$/, "archive_name");
 
-    skip "profile is locked", 3 if ($moz->profile_is_locked($type,$name));
+    skip "profile is locked", 3
+      if ($moz->type($type)->profile_is_locked($name));
 
     my $file = $moz->backup_profile($type,$name,$tmpdir,$arch);
     ok(-e $file, "backup_profile");
@@ -79,11 +81,11 @@ foreach my $type (qw( pseudo )) {
 
     SKIP : {
       skip "$restored profile exists", 1
-	if ($moz->profile_exists("pseudo", $restored));
+	if ($moz->type("pseudo")->profile_exists($restored));
 
       $moz->restore_profile($file, "pseudo", $restored);
 
-      my $rest_path = $moz->profile_path("pseudo", $restored);
+      my $rest_path = $moz->type($type)->profile_path($restored);
       ok(-d $rest_path, "restore path exists");
 
       # TODO - test that files are extracted?

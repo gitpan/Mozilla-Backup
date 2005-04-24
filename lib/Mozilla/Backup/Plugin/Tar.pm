@@ -1,12 +1,12 @@
 =head1 NAME
 
-Mozilla::Backup::Plugin::FileCopy - A file copy plugin for Mozilla::Backup
+Mozilla::Backup::Plugin::Tar - A tar archive plugin for Mozilla::Backup
 
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
 
-  File::Copy;
+  Archive::Tar
   Log::Dispatch;
   Mozilla::Backup
   Params::Smart
@@ -17,26 +17,24 @@ The following non-core modules are required:
   use Mozilla::Backup;
 
   my $moz = Mozilla::Backup->new(
-    plugin => 'Mozilla::Backup::Plugin::FileCopy'
+    plugin => 'Mozilla::Backup::Plugin::Tar'
   );
   
-
 =head1 DESCRIPTION
 
-This is a plugin for Mozilla::Backup which copies profiles to another
-directory.
+This is a plugin for Mozilla::Backup which allows backups to be saved
+as tar files.
 
 =over
 
 =cut
 
-package Mozilla::Backup::Plugin::FileCopy;
+package Mozilla::Backup::Plugin::Tar;
 
 use strict;
 
+use Archive::Tar;
 use Carp;
-use File::Copy;
-use File::Find;
 use File::Spec;
 use Log::Dispatch;
 use Params::Smart 0.03;
@@ -44,13 +42,13 @@ use Params::Validate qw( :all );
 
 # require Mozilla::Backup;
 
-# $Revision: 1.9 $
+# $Revision: 1.3 $
 
-our $VERSION = '0.02';
+our $VERSION = '0.01';
 
 =item new
 
-  $plugin = Mozilla::Backup::Plugin::FileCopy->new( %options );
+  $plugin = Mozilla::Backup::Plugin::Tar->new( %options );
 
 The following C<%options> are supported:
 
@@ -64,12 +62,13 @@ The L<Log::Dispatch> objetc used by L<Mozilla::Backup>. This is required.
 
 The debug flag from L<Mozilla::Backup>. This is not used at the moment.
 
+=item compress
+
+Compress the archive when saving. Enabled by default.
+
 =back
 
 =cut
-
-# TODO - option to preserve file perms/ownership, which should be
-# enabled by default.
 
 my %ALLOWED_OPTIONS = (
     log       => {
@@ -78,6 +77,10 @@ my %ALLOWED_OPTIONS = (
                  },
     debug     => {
                    default  => 0,
+		   type     => BOOLEAN,
+                 },
+    compress  => {
+                   default  => 1,
 		   type     => BOOLEAN,
                  },
 );
@@ -90,16 +93,20 @@ sub new {
   my $self  = {
     log       => $args{log},
     debug     => $args{debug},
+    compress  => $args{compress},
   };
+
+  $Archive::Tar::DEBUG = 1 if ($self->{debug});
 
   return bless $self, $class;
 }
 
+
 =item allowed_options
 
-  @options = Mozilla::Backup::Plugin::FileCopy->allowed_options();
+  @options = Mozilla::Backup::Plugin::Tar->allowed_options();
 
-  if (Mozilla::Backup::Plugin::FileCopy->allowed_options('debug')) {
+  if (Mozilla::Backup::Plugin::Tar->allowed_options('debug')) {
     ...
   }
 
@@ -127,10 +134,11 @@ sub allowed_options {
 
 =item munge_location
 
-  $directory = $plugin->munge_location( $directory );
+  $filename = $plugin->munge_location( $filename );
 
-Munges the backup location name for use by this plugin. (Currently
-has no effect.)
+Munges the archive name by adding the "tar" or "tar..gz" extension to it,
+if it does not already have it.  If called with no arguments, just returns 
+".tar" or ".tar.gz" (depending on whether the L</compress> option is given).
 
 =cut
 
@@ -138,6 +146,11 @@ sub munge_location {
   my $self = shift;
   my %args = Params(qw( file ))->args(@_);
   my $file = $args{file} || "";
+
+  my $ext  = ".tar";
+     $ext .= ".gz" if ($self->{compress});
+
+  $file .= $ext, unless ($file =~ /$ext$/i);
   return $file;
 }
 
@@ -156,15 +169,13 @@ configuration parameters.
 sub open_for_backup {
   my $self = shift;
   my %args = Params(qw( path ?*options ))->args(@_);
-  my $path = File::Spec->rel2abs($args{path});
+  my $path = $args{path};
 
+  $self->{path} = $path;
   $self->{opts} = $args{options};
 
   $self->_log( level => "debug", message => "creating archive $path\n" );
-
-  mkdir $path;
-  chmod 0700, $path;
-  return $self->{path} = _catdir($path);
+  return $self->{tar} = Archive::Tar->new();
 }
 
 =item open_for_restore
@@ -180,8 +191,13 @@ Opens an existing archive for restoring the profile.
 sub open_for_restore {
   my $self = shift;
   my %args = Params(qw( path ?*options ))->args(@_);
-  my $path = File::Spec->rel2abs($args{path});
-  return $self->{path} = _catdir($path);
+  my $path = $args{path};
+
+  $self->{path} = $path;
+  $self->{opts} = $args{options};
+
+  $self->_log( level => "debug", message => "opening archive $path\n" );
+  return $self->{tar} = Archive::Tar->new( $path, $self->{compress} );
 }
 
 =item get_contents
@@ -194,33 +210,7 @@ Returns a list of files in the archive.
 
 sub get_contents {
   my $self = shift;
-
-  my $path  = $self->{path};
-  my @files = ( );
-
-  find({
-	bydepth    => 1,
-	wanted     => sub {
-	  my $file = $File::Find::name;
-	  my $name = substr($file, length($path));
-	  if ($name) {
-	    $name = substr($name,1); # remove initial '/'
-	    {
-	      $name .= '/' if (-d $file);
-	      push @files, $name;
-	    }
-	  }
-
-	},
-       }, $path
-      );
-
-  unless (@files) {
-    carp $self->_log( level => "warn",
-      message => "no files in backup" );
-  }
-
-  return @files;
+  return $self->{tar}->list_files();
 }
 
 =item backup_file 
@@ -236,71 +226,19 @@ sub backup_file {
   my $self = shift;
   my %args = Params(qw( file ?internal  ))->args(@_);
 
-  my $file = File::Spec->canonpath($args{file}); # actual file
+  my $file = $args{file};                 # actual file
   my $name = $args{internal} || $file;    # name in archive
 
   $self->_log( level => "info", message => "backing up $name\n" );
-
-  if (-d $file) {
-    my $dest = File::Spec->catdir($self->{path}, $name);
-    if ($self->_create_dir($name)) {
-      $self->_log( level => "debug", message => "creating $dest\n" );    
-      mkdir $dest;
-      chmod 0700, $dest;
-    }
-    return _catdir($dest);
-  } elsif (-r $file) {
-    my $dest = File::Spec->catfile($self->{path}, $name);
-    if ($self->_create_dir($name)) {
-      $self->_log( level => "debug",
-         message => "copying $file to $dest\n" );    
-
-      # TODO - options to copy permissions
-
-      copy($file, $dest)
-	|| croak $self->_log( level => "error",
-			      message => "copying failed: $!" );
-    }
-    return _catfile($dest);
+  if ($self->{tar}->add_files($file)) {
+    my $nix_name = $file;
+      $nix_name =~ tr|\\|\/|;
+    return $self->{tar}->rename($nix_name, $name);
   } else {
-    croak $self->_log( level => "critical",
-		       message => "cannot find file $file" );
+    # TODO - error in debug
+    return;
   }
 }
-
-=begin internal
-
-=item _create_dir
-
-  if ($plugin->_create_dir($name, $root)) {
-    ...
-  }
-
-Creates deep directories. (This may be removed in future versions.)
-
-=end internal
-
-=cut
-
-sub _create_dir {
-  my $self = shift;
-  my $name = shift;
-  my $root = shift || $self->{path};
-
-  my @dirs = File::Spec->splitdir($name);
-  my $file = pop @dirs;
-
-  foreach my $dir ("", @dirs) {
-    $root = File::Spec->catdir($root, $dir);
-    unless (-d $root) {
-      $self->_log( level => "debug", message => "creating $root\n" );    
-      mkdir $root;
-      chmod 0700, $root;
-    }
-  }
-  return _catdir($root) ? $file : undef;
-}
-
 
 =item restore_file
 
@@ -331,31 +269,8 @@ sub restore_file {
   }
 
   $self->_log( level => "info", message => "restoring $file\n" );
-
-  my $src = File::Spec->catfile($self->{path}, $file);
-
-  if (-d $src) {
-    if ($self->_create_dir($file, $dest)) {
-      $self->_log( level => "debug", message => "creating $file\n" );    
-      mkdir $path;
-      chmod 0700, $path;
-    }
-    return _catdir($path);
-  } elsif (-r $src) {
-    if ($self->_create_dir($file, $dest)) {
-      $self->_log( level => "debug", message => "copying $file\n" );    
-
-      # TODO - options to copy permissions
-
-      copy($src, $path)
-	|| croak $self->_log( level => "error",
-			      message => "copying failed: $!" );
-    }
-    return _catfile($path);
-  } else {
-    croak $self->_log( level => "critical",
-		       message => "cannot find file $src" );
-  }
+  $self->{tar}->extract_file($file, $path);
+  return (-e $path);
 }
 
 =item close_backup
@@ -369,9 +284,9 @@ Closes the backup.
 sub close_backup {
   my $self = shift;
   my $path = $self->{path};
-  $self->_log( level => "debug", message => "closing archive\n" );
+  $self->_log( level => "debug", message => "saving archive: $path\n" );
+  $self->{tar}->write( $path, $self->{compress} );
 }
-
 
 =item close_restore
 
@@ -386,7 +301,6 @@ sub close_restore {
   $self->_log( level => "debug", message => "closing archive\n" );
 }
 
-
 =begin internal
 
 =item _log
@@ -395,14 +309,9 @@ sub close_restore {
 
 Logs an event to the dispatcher.
 
-=item _catdir
-
-=item _catfile
-
 =end internal
 
 =cut
-
 
 sub _log {
   my $self = shift;
@@ -415,21 +324,6 @@ sub _log {
   $p{message} .= "\n" unless ($p{message} =~ /\n$/);
   $self->{log}->log(%p);
   return $msg;    # when used by carp and croak
-}
-
-sub _catdir {
-  if ($_[0]) { # otherwise blank "" is translated to root directory
-    my $path = File::Spec->catdir(@_);
-    return (-d $path) ? $path : undef;
-  }
-  else {
-    return;
-  }
-}
-
-sub _catfile {
-  my $path = File::Spec->catfile(@_);
-  return (-r $path) ? $path : undef;
 }
 
 1;

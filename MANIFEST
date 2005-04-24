@@ -7,10 +7,16 @@ README
 t/01-compile.t
 t/01-pod.t
 t/01-pod-coverage.t
+t/01-fileport.t
+t/02-internal.t
+t/02-pseudo.t
+t/91-prereq.t
 t/Mozilla-Backup.t
 lib/Mozilla/Backup.pm
-lib/Mozilla/Backup/Plugin/Zip.pm
 lib/Mozilla/Backup/Plugin/FileCopy.pm
+lib/Mozilla/Backup/Plugin/Tar.pm
+lib/Mozilla/Backup/Plugin/Zip.pm
+lib/Mozilla/ProfilesIni.pm
 bin/mozback
 
 SIGNATURE    Added here by Module::Build

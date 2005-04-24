@@ -5,6 +5,7 @@ WriteMakefile
           'NAME' => 'Mozilla::Backup',
           'VERSION_FROM' => 'lib/Mozilla/Backup.pm',
           'PREREQ_PM' => {
+                           'Archive::Tar' => '0',
                            'Archive::Zip' => '0',
                            'Carp' => '0',
                            'Config::IniFiles' => '0',
@@ -12,10 +13,12 @@ WriteMakefile
                            'File::Find' => '0',
                            'File::Spec' => '0',
                            'File::Temp' => '0',
+                           'IO::File' => '0',
                            'Log::Dispatch' => '1.6',
                            'Module::Pluggable' => '0',
                            'Params::Smart' => '0.03',
                            'Params::Validate' => '0',
+                           'Regexp::Assemble' => '0',
                            'Test::More' => '0'
                          },
           'INSTALLDIRS' => 'site',

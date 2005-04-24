@@ -6,12 +6,17 @@ Mozilla::Backup - Backup utility for Mozilla profiles
 
 The following non-core modules are required:
 
+  Archive::Tar
   Archive::Zip
   Config::IniFiles
+  File::Temp
   Log::Dispatch
   Module::Pluggable
   Params::Smart
   Params::Validate
+  Regexp::Assemble;
+
+The Archive::* modules are used by their respective plugins.
 
 =head1 SYNOPSIS
 
@@ -22,6 +27,8 @@ The following non-core modules are required:
 
 This package provides a simple interface to back up and restore the
 profiles of Mozilla-related applications such as Firefox or Thunderbird.
+
+The following methods are implemented:
 
 =cut
 
@@ -37,12 +44,14 @@ use File::Find;
 use File::Spec;
 use Log::Dispatch 1.6;
 use Module::Pluggable;
+use Mozilla::ProfilesIni;
 use Params::Smart 0.03;
 use Params::Validate qw( :all );
+use Regexp::Assemble;
 
-# $Revision: 1.28 $
+# $Revision: 1.45 $
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 # Note: the 'pseudo' profile type is deliberately left out
 
@@ -54,116 +63,12 @@ sub profile_types {
   return @PROFILE_TYPES;
 }
 
-=begin internal
-
-=item _catdir
-
-=item _catfile
-
-=end internal
-
-=cut
-
 sub _catdir {
-  if ($_[0]) { # otherwise blank "" is translated to root directory
-    my $path = File::Spec->catdir(@_);
-    return (-d $path) ? $path : undef;
-  }
-  else {
-    return;
-  }
+  goto \&Mozilla::ProfilesIni::_catdir;
 }
 
 sub _catfile {
-  my $path = File::Spec->catfile(@_);
-  return (-r $path) ? $path : undef;
-}
-
-=begin internal
-
-=item _find_profile_path
-
-=end internal
-
-=cut
-
-sub _find_profile_path {
-  my %args = Params(qw( home type ))->args(@_);
-  my $home = $args{home};
-  my $type = $args{type};
-
-  # Known Issue: the first profile that it finds for a type is the one
-  # it uses. If for some reason there are profiles for the same
-  # application in multiple places (maybe due to an upgrade), it will
-  # use the first that it finds.
-
-  my $path;
-
-  # The MOZILLA_HOME environment variables are for OS/2, but putting
-  # them here first allows one to override settings.
-
-  if ($path = _catdir($ENV{uc($type)."_HOME"})) {
-    return $path;
-  }
-  if ($path = _catdir($ENV{MOZILLA_HOME}, ucfirst($type))) {
-    return $path;
-  }
-
-  if ($path = _catdir($home, "\.$type")) {
-    return $path;
-  }
-  if ($path = _catdir($home, "\.mozilla", $type)) {
-    return $path;
-  }
-  if ($path = _catdir($home, ucfirst($type))) {
-    return $path;
-  }
-  if ($path = _catdir($home, "Mozilla", ucfirst($type))) {
-    return $path;
-  }
-
-  if ($^O eq "darwin") {
-    if ($path = _catdir($home, "Library", "Application Support",
-			ucfirst($type))) {
-      return $path;
-    }
-    if ($path = _catdir($home, "Library", "Application Support",
-			"Mozilla", ucfirst($type))) {
-      return $path;
-    }
-    if ($path = _catdir($home, "Library", ucfirst($type))) {
-      return $path;
-    }
-    if ($path = _catdir($home, "Library", "Mozilla", ucfirst($type))) {
-      return $path;
-    }
-  }
-  elsif ($^O eq "MSWin32") {
-    my $program_files = $ENV{ProgramFiles} || "Program Files";
-    if ($path = _catdir($program_files, ucfirst($type))) {
-      return $path;
-    }
-    if ($path = _catdir($program_files, "Mozilla", ucfirst($type))) {
-      return $path;
-    }
-  }
-
-  # If we're here in Cygwin, it means that Mozilla builds are probably
-  # native-Windows instead of Cygwin. So we need to look in the
-  # Windows native drive.
-
-  # Known Issue: if you have separate Cygwin and Windows Moz profiles,
-  # then it will recognize the Cygwin profile first.
-
-  elsif ($^O eq "cygwin") {
-    if ((caller(1))[3] !~ /_find_profile_path$/) {
-      $home = $ENV{APPDATA}; # Win 2000/XP/2003
-      $home =~ s/^(\w):/\/cygdrive\/$1/;
-      return _find_profile_path($home,$type);
-    }
-  }
-
-  return;
+  goto \&Mozilla::ProfilesIni::_catfile;
 }
 
 =begin internal
@@ -183,216 +88,31 @@ sub _find_all_profiles {
   }
 
   foreach my $type (profile_types) {
-    if (my $path = _find_profile_path($home,$type)) {      
-      $self->_read_profile_ini( type => $type, path => $path);
+    if (my $path = Mozilla::ProfilesIni::_find_profile_path(
+                     home => $home, type => $type)) {
+      if (_catfile($path, "profiles.ini")) {
+	$self->{profiles}->{$type} =
+	  Mozilla::ProfilesIni->new( path => $path, debug => $self->{debug} );
+      }
+    } else {
     }
   }
   if ($self->{pseudo}) {
-    $self->_create_pseudo_profile_ini;
-    $self->_create_new_profile("pseudo", "default")
-      unless ($self->profile_exists("pseudo", "default"));
+    my $pseudo = 
+      Mozilla::ProfilesIni->new( path => $self->{pseudo}, create => 1,
+				 debug => $self->{debug} );
+    $pseudo->create_profile( name => "default", is_default => 1 ),
+      unless ($pseudo->profile_exists( name => "default" ));
+    $self->{profiles}->{pseudo} = $pseudo;
   }
 }
 
-=begin internal
-
-=item _read_profile_ini
-
-=end internal
-
-=cut
-
-sub _read_profile_ini {
-  my $self = shift;
-  my %args = Params(qw( type path ))->args(@_);
-  my $type = $args{type};
-  my $path = File::Spec->rel2abs($args{path});
-
-  if (my $ini_file = _catfile($path, "profiles.ini")) {
-    $self->{ini_files}->{$type} = $ini_file;
-    my $cfg = Config::IniFiles->new( -file => $ini_file );
-    if ($cfg) {
-      my $i = 0;
-      while (my $profile = $cfg->val("Profile$i","Path")) {
-
-        my $profile_path = _catdir($path, $profile);
-	$profile_path = _catdir($profile) unless ($profile_path);
-
-	if ($profile_path) {
-	  my $data = {
-	    ProfileId => "Profile$i",
-	    Path      => $profile_path,
-	  };
-	  foreach my $key (qw( Name IsRelative )) {
-	    $data->{$key} = $cfg->val("Profile$i",$key);
-	  }
-
-	  $self->{profiles}->{$type} = { }
-	    unless (exists $self->{profiles}->{$type});
-	  $self->{profiles}->{$type}->{$data->{Name}} = $data;
-
-	} else {
-	  croak $self->_log( level => "error",
-	    message => "$profile_path not a directory");
-	}
-	$i++;
-      }
-    } else {
-      croak $self->_log( level => "error",
-       message => "Bad INI file: $ini_file");
-    }
-  }
-}
-
-=begin internal
-
-=item _create_new_profile
-
-  $moz->_create_new_profile($type,$name);
-
-Creates a new C<$type> profile named C<$name>.  (If a profile with the
-given name already exists, it will die with an error.)
-
-=end internal
-
-=cut
-
-sub _create_new_profile {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-
-  if ($self->profile_exists($type,$name)) {
-    croak $self->_log( level => "error",
-      message => "profile $name already exists in $type" );
-  }
-
-  my $ini_file = $self->ini_file($type);
-  if (-r $ini_file) {
-    my @dirs = File::Spec->splitdir($ini_file);
-    my $prof = File::Spec->catdir( @dirs[0..$#dirs-1], "Profiles" );
-    unless (-d $prof) {
-      $self->_log( level => "info",
-        message => "creating directory $prof\n" );
-      unless (mkdir $prof) {
-	croak $self->_log( level => "error",
-          message => "unable to create directory $prof" );      
-      }
-    }
-
-    # create a unique name
-
-    # Note: Mozilla-style is to use "Profiles/$name/$random.slt" rather
-    # than "Profiles/$random.$name"
-
-    my ($dir, $path);
-    do {
-      $dir = "";
-      for (1..8) { $dir .= ("a".."z","0".."9")[int(rand(36))]; }
-      # TODO - verify the profile naming scheme
-      $dir .= "." . $name;
-      $path = File::Spec->catdir($prof, $dir);
-    } while (-d $path);
-
-    $self->_log( level => "info",
-        message => "creating directory $path\n" );
-    unless (mkdir $path) {
-	croak $self->_log( level => "error",
-          message => "unable to create directory $path" );
-    }
-
-    # BUG/TODO - We need to check how Mozilla etc. handles profile ids
-
-    my $id = "Profile" . scalar( keys %{$self->{profiles}->{$type}} );
-
-#    require YAML;
-#    print STDERR YAML->Dump($self);
-
-    foreach my $n (keys %{$self->{profiles}->{$type}}) {
-      if ($self->{profiles}->{$type}->{$n}->{ProfileId} eq $id) {
-        croak $self->_log( level => "error",
-          message => "Profile Id conflict" );
-      }
-    }
-
-    my $data = {
-      ProfileId  => $id,
-      Name       => $name,
-      IsRelative => 1,
-      Path       => "Profiles/" . $dir,
-    };
-    $self->{profiles}->{$type}->{$name} = $data;
-
-    my $cfg = Config::IniFiles->new( -file => $ini_file );
-    $cfg->AddSection($id);
-    foreach my $key (qw( Name IsRelative Path )) {
-      $cfg->newval($id, $key, $data->{$key});
-    }
-    unless ($cfg->RewriteConfig) {
-      croak $self->_log( level => "error",
-        message => "Unable to update INI file" );
-    }
-  }
-  else {
-    croak $self->_log( level => "error",
-      message => "cannot find INI file $ini_file" );
-  }
-}
-
-=begin internal
-
-=item _create_psuedo_profile_ini
-
-  $moz->__create_psuedo_profile_ini($root);
-
-Creates a pseudo-profile named C<psuedo> for testing and debugging.
-
-=end internal
-
-=cut
-
-sub _create_pseudo_profile_ini {
-  my $self = shift;
-  unless (exists $self->{profiles}->{pseudo}) {
-    $self->{pseudo} = File::Spec->rel2abs($self->{pseudo});
-    my $root = $self->{pseudo};
-
-    unless (-d $root) {
-      croak $self->_log( level => "error",
-	message => "cannot access psuedo profile directory: $root" );
-    }
-
-    my $ini_file = File::Spec->catfile($root, "profiles.ini" );
-    if (-e $ini_file) {
-      $self->_read_profile_ini( type => "pseudo", path => $root);
-    }
-    else {
-      my $cfg = Config::IniFiles->new();
-      $cfg->AddSection("General");
-      $cfg->newval("General", "StartWithLastProfile", 1);
-
-      unless ($cfg->WriteConfig( $ini_file )) {
-	croak $self->_log( level => "error",
-          message => "unable to create pseudo configuration" );
-      }
-
-      if (-e $ini_file) {
-	$self->{ini_files}->{pseudo} = $ini_file;
-	$self->{profiles}->{pseudo} = { };
-      } else {
-	croak $self->_log( level => "error",
-	  message => "unexpected error in creating pseudo configuration" );
-      }
-    }
-  }
-}
 
 =begin internal
 
 =item _load_plugin
 
-  $moz->_load_plugin( plugin => $plugin );
+  $moz->_load_plugin( plugin => $plugin, options => \%options );
 
 Loads a plugin module. It assumes that C<$plugin> contains the full
 module name.
@@ -403,8 +123,11 @@ module name.
 
 sub _load_plugin {
   my $self   = shift;
-  my %args = Params(qw( plugin ))->args(@_);
+  my %args = Params(qw( plugin *?options ))->args(@_);
   my $plugin = $args{plugin};
+  my $opts   = $args{options} || { };
+
+  local ($_);
 
   # TODO - check if plugin already loaded
 
@@ -418,22 +141,22 @@ sub _load_plugin {
     # need. Would it make more sense to have a base class and test
     # isa() instead?
 
-    foreach my $method (qw(
+    foreach (qw(
       allowed_options new munge_location open_for_backup open_for_restore
       get_contents backup_file restore_file close_backup close_restore
     )) {
       croak $self->_log( level => "critical",
-        message => "Plugin does not support $method method" )
-      unless ($plugin->can($method));
+        message => "Plugin does not support $_ method" )
+      unless ($plugin->can($_));
     }
 
     # We check to see if the plugin accepts certain options
 
-    my %opts = ( );
-    foreach my $opt (qw( log debug )) {
-      $opts{$opt} = $self->{$opt} if ($plugin->allowed_options($opt));
+    my %copts = ( );
+    foreach (qw( log debug )) {
+      $copts{$_} = $self->{$_} if ($plugin->allowed_options($_));
     }
-    $self->{plugin} = $plugin->new(%opts);
+    $self->{plugin} = $plugin->new(%copts,%$opts);
   }
   return $self->{plugin};
 }
@@ -468,7 +191,28 @@ Saves the profile in a zip archive. This is the default plugin.
 
 Copies the files in the profile into another directory.
 
+=item Mozilla::Backup::Plugin::Tar
+
+Saves the profile in a tar or tar.gz archive.
+
 =back
+
+You may pass options to the plugin in the following manner:
+
+  $moz = Mozilla::Backup->new(
+    plugin => [ 'Mozilla::Backup::Plugin::Tar', compress => 1 ],
+  );
+
+=item exclude
+
+An array reference of regular expressions for files to exclude from
+the backup.  For example,
+
+  $moz = Mozilla::Backup->new(
+    exclude => [ '^history', '^Cache' ],
+  );
+
+By default the F<Cache> and F<Cache.Trash> folders are excluded.
 
 =begin internal
 
@@ -503,7 +247,12 @@ sub new {
                  },
     plugin    => {
                    default => 'Mozilla::Backup::Plugin::Zip',
+                   type    => SCALAR | ARRAYREF,
                    # we try to load the plugin later
+                 },
+    exclude   => {
+                   default => [ '^Cache(.Trash)?\/' ],
+                   type    => ARRAYREF,
                  },
     pseudo    => {
                    default => '',
@@ -520,12 +269,14 @@ sub new {
   });
 
   my $self  = {
-    log       => $args{log},
     profiles  => { },
-    ini_files => { },
-    pseudo    => $args{pseudo}, # creates a pseudo profile type
-    debug     => $args{debug},
   };
+
+  local ($_);
+
+  foreach (qw( log debug pseudo exclude )) {
+    $self->{$_} = $args{$_};
+  }
 
   bless $self, $class;
 
@@ -538,7 +289,15 @@ sub new {
     ));
   }
 
-  $self->_load_plugin( plugin => $args{plugin} );
+  {
+    my $plugin = $args{plugin};
+    my $opts   = [ ];
+    if (ref($plugin) eq 'ARRAY') {
+      $opts   = $plugin;
+      $plugin = shift @{$opts};
+    }
+    $self->_load_plugin( plugin => $plugin, options => { @$opts } );
+  }
   $self->_find_all_profiles();
 
   return $self;
@@ -581,6 +340,26 @@ sub found_profile_types {
   return (keys %{$self->{profiles}});
 }
 
+=item type
+
+  foreach ($moz->type($type)->profile_names) { ... }
+
+Returns the L<Mozilla::ProfilesIni> object for the corresponding C<$type>,
+or an error if it is invalid.
+
+=cut
+
+sub type {
+  my $self = shift;
+  my %args = Params(qw( type ))->args(@_);
+  my $type = $args{type};
+  return $self->{profiles}->{$type} ||
+    croak $self->_log(
+      level   => "error",
+      message => "invalid profile type: $type"
+    );
+}
+
 =item type_exists
 
   if ($moz->type_exists($type)) { ... }
@@ -594,161 +373,6 @@ sub type_exists {
   my %args = Params(qw( type ))->args(@_);
   my $type = $args{type};
   return (exists $self->{profiles}->{$type});
-}
-
-=begin internal
-
-=item _validate_type
-
-=item _validate_profile
-
-=end internal
-
-=cut
-
-sub _validate_type {
-  my $self = shift;
-  my %args = Params(qw( type ))->args(@_);
-  my $type = $args{type};
-  croak $self->_log( level => "error",
-		     message => "invalid profile type: $type" ),
-    unless ($self->type_exists( type => $type ));
-}
-
-sub _validate_profile {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_type( type => $type);
-  croak $self->_log( level => "error",
-		     message => "invalid profile: $name" ),
-    unless ($self->profile_exists( type => $type, name => $name ));
-}
-
-=item ini_file
-
-  $file = $moz->ini_file($type);
-
-Returns the profile INI file for that type.
-
-=cut
-
-sub ini_file {
-  my $self = shift;
-  my %args = Params(qw( type ))->args(@_);
-  my $type = $args{type};
-  $self->_validate_type( type => $type);
-  return $self->{ini_files}->{$type};
-}
-
-=item profile_names
-
-  @names = $moz->profile_names($type);
-
-Returns the names of profiles associated with the type.
-
-=cut
-
-sub profile_names {
-  my $self = shift;
-  my %args = Params(qw( type ))->args(@_);
-  my $type = $args{type};
-  $self->_validate_type( type => $type);
-  return (keys %{$self->{profiles}->{$type}});
-}
-
-=item profile_path
-
-  $path = $moz->profile_path($type,$name);
-
-Returns the pathname of the profile.
-
-=cut
-
-sub profile_path {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_profile( type => $type, name => $name );
-  my $path = $self->{profiles}->{$type}->{$name}->{Path};
-  unless (-d $path) {
-    my @dirs = File::Spec->splitdir( $self->ini_file($type) );
-    $path = File::Spec->catdir( @dirs[0..$#dirs-1], $path );
-  }
-  return $path;
-}
-
-
-=item profile_exists
-
-  if ($moz->profile_exists($type,$name)) { ... }
-
-Returns true if a profile exists.
-
-=cut
-
-sub profile_exists {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_type( type => $type);
-  return (exists $self->{profiles}->{$type}->{$name});
-}
-
-=item profile_is_relative
-
-  if ($moz->profile_is_relative($type,$name)) { ... }
-
-Returns the 'IsRelative' flag for the profile.
-
-=cut
-
-sub profile_is_relative {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_profile( type => $type, name => $name );
-  return $self->{profiles}->{$type}->{$name}->{IsRelative};
-}
-
-=item profile_id
-
-  $section = $moz->profile_id($type,$name);
-
-Returns the L</ini_file> identifier of the profile.
-
-=cut
-
-sub profile_id {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_profile( type => $type, name => $name );
-  return $self->{profiles}->{$type}->{$name}->{ProfileId};
-}
-
-
-=item profile_is_locked
-
-  if ($moz->profile_is_locked($type,$name)) { ... }
-
-Returns true if there is a lock file in the profile.
-
-=cut
-
-sub profile_is_locked {
-  my $self = shift;
-  my %args = Params(qw( type name ))->args(@_);
-  my $type = $args{type};
-  my $name = $args{name};
-  $self->_validate_profile( type => $type, name => $name );
-  return (-e File::Spec->catfile(
-    $self->profile_path( type => $type, name => $name), 'parent.lock'));
 }
 
 =begin internal
@@ -778,7 +402,9 @@ sub _backup_path {
     croak $self->_log( level => "error", message => "error creating archive" );
   }
 
-  # TODO - options to filter which files backed up
+
+  my $exclude = Regexp::Assemble->new( debug => $self->{debug} );
+  $exclude->add( @{$self->{exclude}} );
 
   find({
 	bydepth    => 1,
@@ -787,7 +413,8 @@ sub _backup_path {
 	  my $name = $relative ? substr($file, length($path)) : $file;
 	  if ($name) {
 	    $name = substr($name,1); # remove initial '/'
-	    unless ($name =~ /^(Cache(\.Trash)?|extensions)\//) {
+
+	    unless ($name =~ $exclude->re) {
 	      $name .= '/' if (-d $file);
               $self->{plugin}->backup_file($file, $name) ||
 		croak $self->_log( level => "error",
@@ -831,7 +458,7 @@ sub backup_profile {
   my $type = $args{type};
   my $name = $args{name};
 
-  $self->_validate_profile( type => $type, name => $name );
+  my $prof = $self->type( type => $type );
 
   my $dest = $args{destination}  || '.';
   my $arch = $args{archive_name} ||
@@ -843,9 +470,13 @@ sub backup_profile {
 
   my $back = File::Spec->catfile($dest, $arch);
 
+  # This needs to be rethought here. IsRelative refers to the Path in
+  # the .ini file being relative, but does it also refer to locations
+  # from within the profile being stored relatively? Not sure here.
+
   my $relative = $args{relative};
 
-  $relative = $self->profile_is_relative( type => $type, name => $name)
+  $relative = $prof->profile_is_relative( name => $name )
     unless (defined $relative);
 
   unless ($relative) {
@@ -853,15 +484,16 @@ sub backup_profile {
       message => "backup will not use relative pathnames\n" );
   }
 
-  if ($self->profile_is_locked( type => $type, name => $name)) {
+  if ($prof->profile_is_locked( name => $name )) {
     croak $self->_log( level => "error",
       message => "cannot backup locked profile" );
   }
 
   $self->_backup_path(
-    profile_path => $self->profile_path( type => $type, name => $name),
+    profile_path => $prof->profile_path( name => $name ),
     destination  => $back,
-    relative     => $relative);
+    relative     => $relative
+  );
   return $back;
 }
 
@@ -879,7 +511,9 @@ sub _archive_name {
   my $type = $args{type};
   my $name = $args{name};
 
-  $self->_validate_profile( type => $type, name => $name );
+  # We don't really care about validating profile types and names
+  # here. If it's invalid, so what. We just have a name that doesn't
+  # refer to any actual profiles.
 
   my $timestamp   = sprintf("%04d%02d%02d-%02d%02d%02d",
        (localtime)[5]+1900, (localtime)[4]+1,
@@ -904,53 +538,83 @@ Logs an event to the dispatcher.
 sub _log {
   my $self = shift;
   my %p    = @_;
-  $self->{log}->log(%p);
-  return $p{message};    # when used by carp and croak
+  my $msg  = $p{message};
+
+  # we want log messages to always have a newline, but not necessarily
+  # the returned value that we pass to carp and croak
+
+  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
+  $self->{log}->log(%p) if ($self->{log});
+  return $msg;    # when used by carp and croak
 }
 
 =item restore_profile
 
-  $moz->restore_profile($backup, $type, $name);
+  $moz->restore_profile($backup, $type, $name, $is_default);
 
 Restores the profile at C<$backup>.
 
-Note: this does not check that it is the corrct profile type. It will
+Warning: this does not check that it is the correct profile type. It will
 allow you to restore a profile of a different (and possibly incompatible)
 type.
 
+It also does not (yet) modify explicit directory settings in the
+F<prefs.js> file in a profile (such as those used by "Thunderbird").
+
+Potential incompatabilities with extensions are also not handled.
+
 =cut
+
+# TODO - method to munge directory settings in prefs.js for the following:
+#   mail.root.pop3
+#   mail.server.server(\d+).directory
+#   mail.server.server(\d+).newsrc.file
+# There are other fiels such as attach directories and values specific to
+# extensions.  These are not easy to identify and update. 
 
 sub restore_profile {
   my $self = shift;
-  my %args = Params(qw( archive_path type name ))->args(@_);
+  my %args = Params(qw( archive_path type name ?is_default ))->args(@_);
   my $path = $args{archive_path};
   my $type = $args{type};
   my $name = $args{name};
+  my $def  = $args{is_default} || 0;
 
-  $self->_validate_type( type => $type );
+  my $prof = $self->type( type => $type );
 
-  unless ($self->profile_exists( type => $type, name => $name)) {
+  unless ($prof->profile_exists( name => $name)) {
     $self->_log( level => "info",
        message => "creating new profile: $name\n" );
-    unless ($self->_create_new_profile( type => $type, name => $name)) {
+
+    unless ($prof->create_profile(
+      name       => $name,
+      is_default => $def )) {
       croak $self->_log( level => "error",
         message => "unable to create profile: $name" );
     }
   }
-  $self->_validate_profile( type => $type, name => $name );
+  unless ($prof->profile_exists( name => $name )) {
+    croak $self->_log(
+      level   => "critical",
+      message => "unable to create profile: $name"
+    );
+  }
 
-  my $dest = $self->profile_path( type => $type, name => $name);
+  my $dest = $prof->profile_path( name => $name );
   unless (-d $dest) {
     croak $self->_log( level => "error",
       message => "invalid profile path$ path" );
   }
 
-  if ($self->profile_is_locked( type => $type, name => $name)) {
+  if ($prof->profile_is_locked( name => $name )) {
     croak $self->_log( level => "error",
       message => "cannot restore locked profile" );
   }
 
   # Note: the guts of this should be moved to a _restore_profile method
+
+  my $exclude = Regexp::Assemble->new( debug => $self->{debug} );
+  $exclude->add( @{$self->{exclude}} );
 
   if ($self->{plugin}->open_for_restore($path)) {
     foreach my $file ($self->{plugin}->get_contents) {
@@ -958,9 +622,11 @@ sub restore_profile {
       # - an option for overwriting existing files?
       # - handle relative profile issues!
 
-      unless ($self->{plugin}->restore_file($file, $dest)) {
-	croak $self->_log( level => "error", 
-          message => "unable to restore files $file" );
+      unless ($file =~ $exclude->re) {
+	unless ($self->{plugin}->restore_file($file, $dest)) {
+	  croak $self->_log( level => "error", 
+            message => "unable to restore files $file" );
+	}
       }
     }
     $self->{plugin}->close_restore;
@@ -975,9 +641,63 @@ sub restore_profile {
 # TODO - a separate copy_profile method that copies a profile into another
 #        one for the same application
 
+our $AUTOLOAD;
+
+sub AUTOLOAD {
+  my $self  = shift;
+  $AUTOLOAD =~ /.*::(\w+)/;
+  my $meth  = $1;
+  if (Mozilla::ProfilesIni->can($meth)) {
+    carp $self->_log(
+      level => "warn",
+      message => "Warning: deprecated method \"$meth\"",
+    );
+    if ($_[0] eq "type") {
+      my %args = @_;
+      my $type = $args{type}; delete $args{type};
+      return $self->type(type => $type)->$meth(%args);
+    }
+    else {
+      my @args = @_;
+      my $type = shift @args;
+      return $self->type(type => $type)->$meth(@args);
+    }
+  }
+  else {
+    croak $self->_log( level => "error",
+      message => "Unrecognized object method \"$meth\" in \"".__PACKAGE__."\"",
+    );
+  }
+}
+
+# Otherwise AUTOLOAD looks for a DESTROY method
+
+sub DESTROY {
+  my $self = shift;
+  undef $self;
+}
+
 1;
 
 =back
+
+=head2 Compatabilty with Earlier Versions
+
+The interface has been changed from version 0.04. Various methods for
+querying profile information were moved into the L<Mozilla::ProfilesIni>
+module.  Code that was of the form
+
+  $moz->method($type,$name);
+
+should be changed to
+
+  $moz->type($type)->method($name);
+
+The older method calls should still work, but are deprecated and will
+issue warnings.  (Support for them will be removed in some future
+version.)
+
+See the L</type> method for more information.
 
 =head1 CAVEATS
 
@@ -990,6 +710,9 @@ accurate.
 =head1 SEE ALSO
 
 Mozilla web site at L<http://www.mozilla.org>.
+
+Mozilla Profile Service source code at
+L<http://lxr.mozilla.org/seamonkey/source/toolkit/profile/src/nsToolkitProfileService.cpp>.
 
 =head1 AUTHOR
 

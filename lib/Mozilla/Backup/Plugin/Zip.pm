@@ -42,9 +42,9 @@ use Params::Validate qw( :all );
 
 # require Mozilla::Backup;
 
-# $Revision: 1.14 $
+# $Revision: 1.17 $
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =item new
 
@@ -62,18 +62,20 @@ The L<Log::Dispatch> objetc used by L<Mozilla::Backup>. This is required.
 
 The debug flag from L<Mozilla::Backup>. This is not used at the moment.
 
+=item compression
+
+The desired compression level to use when backing up files, between C<0>
+and C<9>.  C<0> means to store (not compress) files, C<1> is for the
+fastest method with the lowest compression, and C<9> is for the slowest
+method with the fastest compression.  (The default is C<6>.)
+
+See the L<Archive::Zip> documentation for more information on levels.
+
 =back
 
 =cut
 
-my %ALLOWED_OPTIONS = ( map { $_ => 1, } qw(
-  log debug
-));
-
-sub new {
-  my $class = shift || __PACKAGE__;
-
-  my %args  = validate( @_, {
+my %ALLOWED_OPTIONS = (
     log       => {
                    required => 1,
                    isa      => 'Log::Dispatch',
@@ -82,11 +84,30 @@ sub new {
                    default  => 0,
 		   type     => BOOLEAN,
                  },
-  });
+
+    # This options is intentionally called 'compression' instead of
+    # 'compress' so as not to be confused with option in Tar plugin
+
+    compression => {
+                   default  => 6,
+                   type     => SCALAR,
+                   callbacks => {
+                     'valid_range' => sub {
+                       return (($_[0] >= 0) && ($_[0] <= 9));
+                     },
+                   },
+                 },
+);
+
+sub new {
+  my $class = shift || __PACKAGE__;
+
+  my %args  = validate( @_, \%ALLOWED_OPTIONS);
 
   my $self  = {
     log       => $args{log},
     debug     => $args{debug},
+    compression => $args{compression},
   };
 
   return bless $self, $class;
@@ -217,7 +238,9 @@ sub backup_file {
   my $name = $args{internal} || $file;    # name in archive
 
   $self->_log( level => "info", message => "backing up $name\n" );
-  return $self->{zip}->addFileOrDirectory($file, $name);
+  my $member = $self->{zip}->addFileOrDirectory($file, $name);
+  $member->desiredCompressionLevel( $self->{compression} );
+  return $member;
 }
 
 =item restore_file
@@ -296,8 +319,14 @@ Logs an event to the dispatcher.
 sub _log {
   my $self = shift;
   my %p    = @_;
+  my $msg  = $p{message};
+
+  # we want log messages to always have a newline, but not necessarily
+  # the returned value that we pass to carp and croak
+
+  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
   $self->{log}->log(%p);
-  return $p{message};    # when used by carp and croak
+  return $msg;    # when used by carp and croak
 }
 
 1;

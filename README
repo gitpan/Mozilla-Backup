@@ -4,6 +4,7 @@ NAME
 REQUIREMENTS
     The following non-core modules are required:
 
+      Archive::Tar
       Archive::Zip
       Config::IniFiles
       File::Temp
@@ -11,6 +12,9 @@ REQUIREMENTS
       Module::Pluggable
       Params::Smart
       Params::Validate
+      Regexp::Assemble
+
+    The Archive::* modules are used by their respective plugins.
 
 Installation
     Installation can be done using the traditional Makefile.PL or the
@@ -41,6 +45,44 @@ DESCRIPTION
     Mozilla-related applications such as Firefox and Thunderbird.
 
     More details are available in the module documentation.
+
+Compatability with Earlier Versions
+    The interface has been changed from version 0.04. Various methods
+    for querying profile information were moved into the *::ProfilesIni
+     module.  Code that was of the form
+
+      $moz->method($type,$name);
+
+    should be changed to
+
+      $moz->type($type)->method($name);
+
+    The older method calls should still work, but are deprecated and
+    will issue warnings.
+
+    See the module documentation and revision history (below) for more
+    information.
+
+REVISION HISTORY
+    The following changes have been made since the previous release:
+
+    * profile.ini-handling code was moded to Mozilla::ProfilesIni
+      and methods were revised accordingly.
+
+    * Added Tar plugin to produce .tar or .tar.gz archives.
+
+    * Added ability to control compression level in .zip archives
+
+    * Fixed bugs associated with adding new profiles and changing
+      the default profile.
+
+    * Improved profile lock detection
+
+    * Ability to specify an exlusion list for backups and restores.
+
+    * Added tests
+
+    Details can be found in the Changes file.    
 
 CAVEATS
     This module is a prototype. Use at your own risk!

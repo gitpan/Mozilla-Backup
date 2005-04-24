@@ -7,9 +7,9 @@ use Carp;
 use Getopt::Long;
 use Log::Dispatch;
 use Log::Dispatch::Screen;
-use Mozilla::Backup 0.04;
+use Mozilla::Backup 0.05;
 
-our $VERSION = '0.02'; # $Revision: 1.2 $
+our $VERSION = '0.03'; # $Revision: 1.5 $
 
 my $Help    = 0;
 my $List    = 0;
@@ -63,8 +63,10 @@ $Log->add( Log::Dispatch::Screen->new( name => 'screen',
 if ($List) {
   my $moz = Mozilla::Backup->new( log => $Log );
   foreach my $type (sort $moz->found_profile_types) {
-    foreach my $name (sort $moz->profile_names($type)) {
-      print sprintf("%-16s %-16s\n", $type, $name);
+    foreach my $name (sort $moz->type(type => $type)->profile_names) {
+      print sprintf("%-16s %-16s %-16s\n", $type, $name,
+        ($moz->type($type)->profile_is_default(name => $name) ? "default" : "")
+      );
     }
   }
 }
@@ -73,7 +75,7 @@ elsif ($Backup) {
     log    => $Log,
     plugin => "Mozilla::Backup::Plugin::$Plugin",
   );
-  if ($moz->profile_exists( type => $Type, name => $Name)) {
+  if ($moz->type(type => $Type)->profile_exists(name => $Name)) {
     if (-d $Path) {
       $moz->backup_profile(
         type => $Type,

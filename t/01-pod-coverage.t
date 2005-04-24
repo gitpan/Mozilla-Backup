@@ -9,9 +9,11 @@ plan skip_all => "Test::Pod::Coverage required" if $@;
 
 
 my %MODULES = (
-  'Mozilla::Backup'                   => 0.04,
-  'Mozilla::Backup::Plugin::Zip'      => 0.01,
-  'Mozilla::Backup::Plugin::FileCopy' => 0.01,
+  'Mozilla::Backup'                   => 0,
+  'Mozilla::Backup::Plugin::Zip'      => 0,
+  'Mozilla::Backup::Plugin::FileCopy' => 0,
+  'Mozilla::Backup::Plugin::Tar'      => 0,
+  'Mozilla::ProfilesIni'              => 0,
 );
 
 plan tests => scalar(keys %MODULES);

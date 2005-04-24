@@ -1,3 +1,5 @@
+# $Revision: 1.13 $
+
 use Module::Build;
 
 my $build = Module::Build->new
@@ -7,6 +9,7 @@ my $build = Module::Build->new
      requires => {
        'perl'             => '5.6.0',
        'Carp'             => 0,
+       'Archive::Tar'     => 0,
        'Archive::Zip'     => 0,
        'Config::IniFiles' => 0,
        'File::Copy'       => 0,
@@ -17,15 +20,18 @@ my $build = Module::Build->new
        'Module::Pluggable' => 0,
        'Params::Smart'    => 0.03,
        'Params::Validate' => 0,
+       'Regexp::Assemble' => 0,
      },
      recommends => {
        'Getopt::Long'          => 0,    # for script
        'Log::Dispatch::Screen' => 0,    # for debugging
        'Test::Pod::Coverage'   => 0,    # for tests
        'Test::Pod'             => 1.00,
+       'Test::Portability::Files' => 0,
 #        'Test::Prereq'   => 0,
      },
      build_requires => {
+       'IO::File'       => 0,
        'Test::More'     => 0,
      },
      script_files       => [
