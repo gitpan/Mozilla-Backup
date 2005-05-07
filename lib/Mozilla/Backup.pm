@@ -2,21 +2,48 @@
 
 Mozilla::Backup - Backup utility for Mozilla profiles
 
+=begin readme
+
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
 
   Archive::Tar
   Archive::Zip
+  Compress::Zlib
   Config::IniFiles
   File::Temp
+  IO::Zlib
   Log::Dispatch
   Module::Pluggable
   Params::Smart
-  Params::Validate
   Regexp::Assemble;
+  Regexp::Common
+  Return::Value
+  Test::More
 
-The Archive::* modules are used by their respective plugins.
+The Archive::* and *::Zlib modules are used by their respective plugins.
+
+=head1 INSTALLATION
+
+Installation can be done using the traditional Makefile.PL or the newer
+Build.PL methods.
+
+Using Makefile.PL:
+
+  perl Makefile.PL
+  make test
+  make install
+
+(On Windows platforms you should use C<nmake> instead.)
+
+Using Build.PL (if you have Module::Build installed):
+
+  perl Build.PL
+  perl Build test
+  perl Build install
+
+=end readme
 
 =head1 SYNOPSIS
 
@@ -28,7 +55,16 @@ The Archive::* modules are used by their respective plugins.
 This package provides a simple interface to back up and restore the
 profiles of Mozilla-related applications such as Firefox or Thunderbird.
 
-The following methods are implemented:
+=begin readme
+
+More details are available in the module documentation.
+
+=end readme
+
+=for readme stop
+
+Method calls may use named or positional parameters (named calls are
+recommended).  Methods are outlined below:
 
 =cut
 
@@ -39,24 +75,31 @@ use strict;
 use warnings;
 
 use Carp;
-use Config::IniFiles;
+# use Config::IniFiles;
+use File::Copy qw( copy );
 use File::Find;
 use File::Spec;
+use IO::File;
 use Log::Dispatch 1.6;
 use Module::Pluggable;
 use Mozilla::ProfilesIni;
-use Params::Smart 0.03;
-use Params::Validate qw( :all );
+use Params::Smart 0.04;
 use Regexp::Assemble;
+use Regexp::Common 1.8 qw( comment balanced delimited );
+use Return::Value;
 
-# $Revision: 1.45 $
+# $Revision: 1.64 $
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
-# Note: the 'pseudo' profile type is deliberately left out
+# Note: the 'pseudo' profile type is deliberately left out.
+#       'minotaur' is obsolete, and so omitted; what about 'phoenix'?
+
+# TODO: add support for Epiphany, SkipStone, and DocZilla, if relevant
 
 my @PROFILE_TYPES = qw(
-  camino firefox galeon k-meleon mozilla netscape phoenix sunbird thunderbird
+  beonex camino firefox galeon k-meleon mozilla netscape phoenix
+  sunbird thunderbird
 );
 
 sub profile_types {
@@ -75,6 +118,10 @@ sub _catfile {
 
 =item _find_all_profiles
 
+  $moz->_find_all_profiles()
+
+Attempts to locale the profiles for all known L</profile_types>).
+
 =end internal
 
 =cut
@@ -84,7 +131,15 @@ sub _find_all_profiles {
 
   my $home = $ENV{HOME};
   if ($^O eq "MSWin32") {
-    $home  = $ENV{APPDATA} || _catdir($ENV{USERPROFILE}, "Application Data");
+    $home  = $ENV{APPDATA} ||
+      _catdir($ENV{USERPROFILE}, "Application Data") ||
+      _catdir($ENV{WINDIR}, "Profiles", "Application Data") ||
+      _catdir($ENV{WINDIR}, "Application Data");
+
+    # Question: is WinDir set for all Windows 9x/WinNT machines? Where
+    # is the code that Mozilla uses to determine where the profile
+    # should be?
+
   }
 
   foreach my $type (profile_types) {
@@ -114,8 +169,10 @@ sub _find_all_profiles {
 
   $moz->_load_plugin( plugin => $plugin, options => \%options );
 
+  $moz->_load_plugin( $plugin, %options );
+
 Loads a plugin module. It assumes that C<$plugin> contains the full
-module name.
+module name.  C<%options> are passed to the plugin constructor.
 
 =end internal
 
@@ -133,8 +190,7 @@ sub _load_plugin {
 
   eval "CORE::require $plugin";
   if ($@) {
-    croak $self->_log( level => "critical", 
-      message => "Unable to load plugin plugin" );
+    croak $self->_log( "Unable to load plugin plugin" );
   }
   else {
     # We check to see if the plugin supports the methods we
@@ -145,8 +201,7 @@ sub _load_plugin {
       allowed_options new munge_location open_for_backup open_for_restore
       get_contents backup_file restore_file close_backup close_restore
     )) {
-      croak $self->_log( level => "critical",
-        message => "Plugin does not support $_ method" )
+      croak $self->_log( "Plugin does not support $_ method" )
       unless ($plugin->can($_));
     }
 
@@ -212,7 +267,10 @@ the backup.  For example,
     exclude => [ '^history', '^Cache' ],
   );
 
-By default the F<Cache> and F<Cache.Trash> folders are excluded.
+Regular expressions can be strings or compiled Regexps.
+
+By default the F<Cache>, <Cache.Trash> folders, XUL cache, mail folders 
+cache and lock files are excluded.
 
 =begin internal
 
@@ -233,41 +291,77 @@ accept it.
 
 =cut
 
-# TODO:
-# - option to insert comments into archive
-# - option to control compression type (pass to zip plugin)
-
 sub new {
   my $class = shift || __PACKAGE__;
 
-  my %args  = validate( @_, {
-    log       => {
-                   default => Log::Dispatch->new,
-                   isa     => 'Log::Dispatch',
-                 },
-    plugin    => {
-                   default => 'Mozilla::Backup::Plugin::Zip',
-                   type    => SCALAR | ARRAYREF,
-                   # we try to load the plugin later
-                 },
-    exclude   => {
-                   default => [ '^Cache(.Trash)?\/' ],
-                   type    => ARRAYREF,
-                 },
-    pseudo    => {
-                   default => '',
-                   type    => SCALAR,
-                   callbacks => {
-                     'directory exists' =>
-                        sub { (($_[0] eq "") || (-d $_[0])) },
-                   },
-                 },
-    debug     => {
-                   default => 0,
-                   type    => BOOLEAN,
-                 },
-  });
+  my %args  = Params(
+   {
+     name     => "plugin",
+     default  => "Mozilla::Backup::Plugin::Zip",
+     callback => sub {
+       my ($self, $name, $value) = @_;
+       croak "expected scalar or array reference"
 
+	 unless ((!ref $value) || (ref($value) eq "ARRAY"));
+       return $value;
+     },
+     name_only => 0,
+   },
+   {
+     name     => "log",
+     default  => Log::Dispatch->new(),
+     callback => sub {
+       my ($self, $name, $log) = @_;
+       croak "invalid log sink"
+	 unless ((ref $log) && $log->isa("Log::Dispatch"));
+       return $log;
+     },
+     name_only => 1,
+   },
+   {
+     name      => "pseudo",
+     default   => "",
+     callback  => sub {
+       my ($self, $name, $value) = @_;
+       $value ||= "";
+       croak "invalid pseudo directory"
+	 unless (($value eq "") || _catdir($value));
+       return $value;
+     },
+     name_only => 1,
+   },
+   {
+     name      => "debug",
+     default   => 0,
+     name_only => 1,
+   },
+   {
+     name     => "exclude",
+     default  => [
+       '^Cache(.Trash)?\/',                # web cache
+       'XUL\.(mfl|mfasl)',                 # XUL cache
+       'XUL FastLoad File',                # XUL cache 
+       '(Invalid|Aborted)\.mfasl',         # Invalidated XUL
+       'panacea.dat',                      # mail folder cache
+       '(\.parentlock|parent\.lock|lock)', # lock file
+     ],
+     callback => sub {
+       my ($self, $name, $value) = @_;
+       $value = [ $value ] unless (ref $value);
+       croak "expected scalar or array reference"
+	 unless (ref($value) eq "ARRAY");
+       local ($_);
+       foreach (@$value) {
+	 croak "expected regular expression"
+	   unless ((!ref $value) || (ref($value) eq "Regexp"));	 
+       }
+       return $value;
+     },
+     name_only => 0,
+     slurp     => 1,
+   },
+  )->args(@_);
+		     
   my $self  = {
     profiles  => { },
   };
@@ -282,7 +376,7 @@ sub new {
 
   if ($self->{debug}) {
     require Log::Dispatch::Screen;
-    $args{log}->add( Log::Dispatch::Screen->new(
+    $self->{log}->add( Log::Dispatch::Screen->new(
       name      => __PACKAGE__,
       min_level => "debug",
       stderr    => 1,
@@ -312,6 +406,7 @@ of the module.
 
 Supported profile types:
 
+  beonex
   camino
   firefox
   galeon
@@ -322,8 +417,8 @@ Supported profile types:
   sunbird
   thunderbird
 
-Some of these profile types are for platform-specific applications, so
-you may never run into them.
+Some of these profile types are for platform-specific or obsolete
+applications, so you may never run into them.
 
 =item found_profile_types
 
@@ -342,7 +437,11 @@ sub found_profile_types {
 
 =item type
 
-  foreach ($moz->type($type)->profile_names) { ... }
+  $ini = $moz->type( type => $type );
+
+  $ini = $moz->type( $type );
+
+  if ($moz->type( $type )->profile_exists( $name )) { ... }
 
 Returns the L<Mozilla::ProfilesIni> object for the corresponding C<$type>,
 or an error if it is invalid.
@@ -355,12 +454,13 @@ sub type {
   my $type = $args{type};
   return $self->{profiles}->{$type} ||
     croak $self->_log(
-      level   => "error",
-      message => "invalid profile type: $type"
+      "invalid profile type: $type"
     );
 }
 
 =item type_exists
+
+  if ($moz->type_exists( type => $type)) { ... }
 
   if ($moz->type_exists($type)) { ... }
 
@@ -379,6 +479,8 @@ sub type_exists {
 
 =item _backup_path
 
+An internal routine used by L</backup_profile>.
+
 =end internal
 
 =cut
@@ -393,13 +495,15 @@ sub _backup_path {
   # TODO - an option for overwriting existing files?
 
   if (-e $dest) {
-    croak $self->_log( level => "error", message => "$dest exists already" );
+    return failure
+      $self->_log( "$dest exists already" );
   }
 
   $self->_log( level => "notice", message => "backing up $path\n" );
 
   unless ($self->{plugin}->open_for_backup( path => $dest)) {
-    croak $self->_log( level => "error", message => "error creating archive" );
+    return failure
+      $self->_log( "error creating archive" );
   }
 
 
@@ -416,9 +520,9 @@ sub _backup_path {
 
 	    unless ($name =~ $exclude->re) {
 	      $name .= '/' if (-d $file);
-              $self->{plugin}->backup_file($file, $name) ||
-		croak $self->_log( level => "error",
-		  message => "error backing up $file" );
+              my $r = $self->{plugin}->backup_file($file, $name);
+		return failure $self->_log(
+		  "error backing up $file: $r" ) unless ($r);
 	    }
 	  }
 
@@ -427,10 +531,22 @@ sub _backup_path {
       );
 
   # TODO: check for errors here
-  $self->{plugin}->close_backup();
+  unless ($self->{plugin}->close_backup()) {
+    return failure "close_backup failed";
+  }
+
+  return success;
 }
 
 =item backup_profile
+
+  $file = $moz->backup_profile(
+    type         => $type,
+    name         => $name,
+    destination  => $dest,
+    archive_name => $arch,
+    relative     => $rel,
+  );
 
   $file = $moz->backup_profile($type,$name,$dest,$arch,$rel);
 
@@ -438,7 +554,8 @@ Backs up the profile as a zip archive to the path specified in C<$dest>.
 (If none is given, the current directory is assumed.)
 
 C<$arch> is an optional name for the archive file. If none is given, it
-assumes F<type-name-date-time.zip>.
+assumes F<type-name-date-time.ext> (for example,
+F<mozilla-default-20050426-120000.zip> if the Zip plugin is used.)
 
 C<$rel> is an optional flag to backup files with relative paths instead
 of absolute pathnames. It defaults to the value of L</profile_is_relative>
@@ -446,8 +563,8 @@ for that profile. (Non-relative profiles will show a warning message.)
 
 If the profile is currently in use, it may not be backed up properly.
 
-This version does no munging of the profile data at all. It simply
-stores the files in an archive.
+This version does no munging of the profile data, nor does it store any
+meta information. See L</KNOWN ISSUES> below.
 
 =cut
 
@@ -485,21 +602,25 @@ sub backup_profile {
   }
 
   if ($prof->profile_is_locked( name => $name )) {
-    croak $self->_log( level => "error",
-      message => "cannot backup locked profile" );
+    return failure $self->_log( 
+      "cannot backup locked profile" );
   }
 
-  $self->_backup_path(
+  my $r = $self->_backup_path(
     profile_path => $prof->profile_path( name => $name ),
     destination  => $back,
     relative     => $relative
   );
+  return failure $r unless ($r);
+
   return $back;
 }
 
 =begin internal
 
 =item _archive_name
+
+Returns a default "archive name" appropriate to the plugin type.
 
 =end internal
 
@@ -527,9 +648,12 @@ sub _archive_name {
 
 =item _log
 
-  $moz->_log( level => $level, $message => $message );
+  $moz->_log( $message, $level );
 
-Logs an event to the dispatcher.
+  $moz->_log( $message => $message, level => $level );
+
+Logs an event to the dispatcher. If C<$level> is unspecified, "error"
+is assumed.
 
 =end internal
 
@@ -537,48 +661,179 @@ Logs an event to the dispatcher.
 
 sub _log {
   my $self = shift;
-  my %p    = @_;
-  my $msg  = $p{message};
+  my %args = Params(qw( message ?level="error" ))->args(@_);
+  my $msg  = $args{message};
 
   # we want log messages to always have a newline, but not necessarily
-  # the returned value that we pass to carp and croak
+  # the returned value that we pass to carp/croak/return value
 
-  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
-  $self->{log}->log(%p) if ($self->{log});
-  return $msg;    # when used by carp and croak
+  $args{message} .= "\n" unless ($args{message} =~ /\n$/);
+  $self->{log}->log(%args) if ($self->{log});
+  return $msg;    # when used by carp/croak/return value
 }
+
+=begin internal
+
+=item _munge_prefs_js
+
+  $moz->_munge_prefs_js( $profile_path, $prefs_file );
+
+=end internal
+
+=cut
+
+# TODO - test if we really need this. Thunderbird saves the relative
+# path info, which we use for munging. But we need to check the
+# behavior, since in the case where we copy profiles, we don't want it
+# using a valid path but for a different profile.
+
+sub _munge_prefs_js {
+  my $self = shift;
+  my %args = Params(qw( profile_path ?prefs_file ))->args(@_);
+  my $profd    = $args{profile_path};
+  my $filename = $args{prefs_file} || _catfile($profd, "prefs.js");
+
+  unless (-d $profd) {
+    return failure $self->_log( "Invalid profile path: $profd" );
+  }
+
+  unless (-r $filename) {
+    return failure $self->_log( "Invalid prefs file: $filename" );
+  }
+
+  my $fh = IO::File->new("<$filename")
+    || return failure $self->_log( "Unable to open file: $filename" );
+
+  my $buffer = join("", <$fh>);
+
+  close $fh ||
+    return failure $self->_log( "Unable to close file: $filename" );
+
+  $buffer =~ s/$RE{comment}{Perl}//g;
+  $buffer =~ s/$RE{comment}{JavaScript}//g;
+
+  my %prefs = ( );
+
+  local ($_);
+  foreach (split /\n/, $buffer) {
+    if ($_ =~ /user_pref($RE{balanced}{-parens=>'()'})\;/) {
+      my $args = $1;
+      if ($args =~ /\(\s*($RE{delimited}{-delim=>'"'}{-esc})\,\s*(.+)\s*\)/) {
+	my ($pref, $val) = ($1, $2);
+        $pref = substr($pref,1,-1);
+        $prefs{$pref} = $val;
+#	print "user_pref(\"$pref\", $val);\n";
+      }
+      else {
+	return failure $self->_log( "Don\'t know how to handle line: $args" );
+      }
+      
+    }
+  }
+
+  my $re = Regexp::Assemble->new();
+  $re->add(
+    qr/^mail\.root\.pop3$/,
+    qr/^mail\.server\.server\d+\.(directory|newsrc\.file)$/,
+  );
+
+  foreach my $pref (keys %prefs) {
+    if ($pref =~ $re->re) {
+      if (exists $prefs{$pref."-rel"}) {
+	if ($prefs{$pref."-rel"} =~ /\"\[ProfD\](.+)\"/) {
+	  my $path = File::Spec->catdir($profd, $1);
+          $path =~ s/\\{2,}/\\/g; # unescape multiple slashes
+          unless (-e $path) {
+            $self->_log( level => "warn",
+              message => "Path does not exist: $path", );
+          }
+          $path =~ s/\\/\\\\/g;   # escape single slashes
+          $prefs{$pref} = "\"$path\"";
+        }
+        else {
+          $self->_log( level => "warn",
+           message => "Cannot handle $pref-rel key", );
+        }
+      }
+      else {
+          $self->_log( level => "warn",
+           message => "Cannot find $pref-rel key", );
+      }
+    }
+    elsif ($pref =~ /\.dir$/) {
+      # TODO - check if directory exists, and if not, give a warning
+    }
+  }
+
+  if (keys %prefs) {
+    copy($filename, $filename.".backup");
+    chmod 0600, $filename.".backup";
+
+    $fh = IO::File->new(">$filename")
+      || return failure $self->_log ( "Unable to write to $filename" );
+
+    print $fh "
+# Mozilla User Preferences
+
+/* Do not edit this file. 
+ * 
+ * This file was modified by Mozilla::Backup.
+ *
+ * The original is at $filename.backup
+ */
+
+";
+
+    foreach my $pref (sort keys %prefs) {
+      print $fh "user_pref(\"$pref\", $prefs{$pref});\n";
+    }
+
+    close $fh || return failure $self->_log( "Unable to close $filename" );
+  } else {
+    return failure $self->_log( "No preferences to save" );
+  }
+
+  return success;
+}
+
 
 =item restore_profile
 
-  $moz->restore_profile($backup, $type, $name, $is_default);
+  $res = $moz->restore_profile(
+    archive_path => $backup,
+    type         => $type,
+    name         => $name,
+    is_default   => $is_default,
+    munge_prefs  => $munge_prefs, # update prefs.js file
+  );
 
-Restores the profile at C<$backup>.
+  $res = $moz->restore_profile($backup,$type,$name,$is_default);
+
+Restores the profile at C<$backup>.  Returns true if successful,
+false otherwise.
+
+C<$munge_prefs> can only be specified using named parameter calls. If
+C<$munge_prefs> is true, then it will attempt to correct any absolute
+paths specified in the F<prefs.js> file.
 
 Warning: this does not check that it is the correct profile type. It will
 allow you to restore a profile of a different (and possibly incompatible)
 type.
 
-It also does not (yet) modify explicit directory settings in the
-F<prefs.js> file in a profile (such as those used by "Thunderbird").
-
 Potential incompatabilities with extensions are also not handled.
+See L</KNOWN ISSUES> below.
 
 =cut
 
-# TODO - method to munge directory settings in prefs.js for the following:
-#   mail.root.pop3
-#   mail.server.server(\d+).directory
-#   mail.server.server(\d+).newsrc.file
-# There are other fiels such as attach directories and values specific to
-# extensions.  These are not easy to identify and update. 
-
 sub restore_profile {
   my $self = shift;
-  my %args = Params(qw( archive_path type name ?is_default ))->args(@_);
+  my %args =
+    Params(qw( archive_path type name ?is_default ?+munge_prefs ))->args(@_);
   my $path = $args{archive_path};
   my $type = $args{type};
   my $name = $args{name};
   my $def  = $args{is_default} || 0;
+  my $munge = $args{munge_prefs} || 0;
 
   my $prof = $self->type( type => $type );
 
@@ -589,26 +844,22 @@ sub restore_profile {
     unless ($prof->create_profile(
       name       => $name,
       is_default => $def )) {
-      croak $self->_log( level => "error",
-        message => "unable to create profile: $name" );
+      return failure $self->_log( "unable to create profile: $name" );
     }
   }
   unless ($prof->profile_exists( name => $name )) {
-    croak $self->_log(
-      level   => "critical",
-      message => "unable to create profile: $name"
+    return failure $self->_log(
+      "unable to create profile: $name"
     );
   }
 
   my $dest = $prof->profile_path( name => $name );
   unless (-d $dest) {
-    croak $self->_log( level => "error",
-      message => "invalid profile path$ path" );
+    return failure $self->_log( "invalid profile path$ path" );
   }
 
   if ($prof->profile_is_locked( name => $name )) {
-    croak $self->_log( level => "error",
-      message => "cannot restore locked profile" );
+    return failure $self->_log( "cannot restore locked profile" );
   }
 
   # Note: the guts of this should be moved to a _restore_profile method
@@ -624,18 +875,30 @@ sub restore_profile {
 
       unless ($file =~ $exclude->re) {
 	unless ($self->{plugin}->restore_file($file, $dest)) {
-	  croak $self->_log( level => "error", 
-            message => "unable to restore files $file" );
+	  return failure $self->_log( "unable to restore files $file" );
 	}
       }
     }
     $self->{plugin}->close_restore;
+
+    if ($munge) {
+      if (my $filename = _catfile($dest, "prefs.js")) {
+	my $r = $self->_munge_prefs_js(
+	  profile_path => $dest,
+	  prefs_file   => $filename,
+	);
+        return failure $r unless ($r);
+      } else {
+	$self->_log( level => "warn", message => "Cannot find prefs.js" );
+      }
+    }
+
   }
   else {
-    croak $self->_log( level => "error",
-		       message => "unable to open backup: $path" );
+    return failure $self->_log( "unable to open backup: $path" );
   }
 
+  return success;
 }
 
 # TODO - a separate copy_profile method that copies a profile into another
@@ -664,8 +927,8 @@ sub AUTOLOAD {
     }
   }
   else {
-    croak $self->_log( level => "error",
-      message => "Unrecognized object method \"$meth\" in \"".__PACKAGE__."\"",
+    croak $self->_log( 
+      "Unrecognized object method \"$meth\" in \"".__PACKAGE__."\"",
     );
   }
 }
@@ -699,7 +962,21 @@ version.)
 
 See the L</type> method for more information.
 
-=head1 CAVEATS
+=for readme continue
+
+=begin readme
+
+=head1 REVISION HISTORY
+
+The following changes have been made since the last release:
+
+=for readme include type=text file=Changes start=0.06 stop=0.05
+
+Details can be found in the Changes file.    
+
+=end readme
+
+=head1 KNOWN ISSUES
 
 This module is a prototype. Use at your own risk!
 
@@ -707,12 +984,71 @@ Not all of the profile types have been tested, and are implemented
 based on information gleaned from sources which may or may not be
 accurate.
 
+The current version of this module only copies files and does little
+manipulation of any files, except for the F<profiles.ini> and F<prefs.js>
+to update some pathnames.  This means that information specific to a
+profile on a machine such as extensions and themes is kept as-is, which
+may not be a good thing if a profile is restored to a different location
+or machine, or even application.
+
+(By default cache files are excluded from backups; there may be problems
+if cache files are restored to incompatible applications or machines.)
+
+=for readme stop
+
+=head2 To Do List
+
+A list of to-do items, in no particular order:
+
+=over
+
+=item Meta-data
+
+Save meta-data about backups (such as profile type, file locations, platform)
+so that file-restoration can make the appropriate conversions.
+
+=item Improved Parameter Checking
+
+Improve parameter type and value checking.
+
+=item Tests
+
+The test suite needs improved coverage. Sample profiles should be included
+for more thorough testing.
+
+=item User-friendly Exclusion Lists
+
+User-friendly exclusion lists (via another module?).  Exclusion by categories
+(privacy protection, E-mail, Bookmarks, etc.).
+
+=item Standardize Log Messages
+
+Have a standard format (case, puntuation etc.) for log messages. Also
+standardize error levels (error, alert, critical, etc.).
+
+Possiblly add hooks for internationalisation of messages.
+
+=item Other
+
+Other "TODO" items marked in source code.
+
+=back
+
+=for readme continue
+
 =head1 SEE ALSO
 
 Mozilla web site at L<http://www.mozilla.org>.
 
+=for readme stop
+
+MozillaZine KnowledgeBase article on Profiles at
+L<http://kb.mozillazine.org/Profile>.
+
 Mozilla Profile Service source code at
 L<http://lxr.mozilla.org/seamonkey/source/toolkit/profile/src/nsToolkitProfileService.cpp>.
+
+=for readme continue
 
 =head1 AUTHOR
 
@@ -724,7 +1060,7 @@ Feedback is always welcome.  Please use the CPAN Request Tracker at
 L<http://rt.cpan.org> to submit bug reports.
 
 There is now a SourceForge project for this module at
-L<http://sourceforge.net/projects/mozilla-backup/>
+L<http://mozilla-backup.sourceforge.net/>.
 
 =head1 LICENSE
 

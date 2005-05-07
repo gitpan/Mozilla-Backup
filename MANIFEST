@@ -11,6 +11,7 @@ t/01-fileport.t
 t/02-internal.t
 t/02-pseudo.t
 t/91-prereq.t
+t/02-profilesini.t
 t/Mozilla-Backup.t
 lib/Mozilla/Backup.pm
 lib/Mozilla/Backup/Plugin/FileCopy.pm

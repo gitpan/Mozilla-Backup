@@ -8,8 +8,9 @@ use Getopt::Long;
 use Log::Dispatch;
 use Log::Dispatch::Screen;
 use Mozilla::Backup 0.05;
+use Return::Value;
 
-our $VERSION = '0.03'; # $Revision: 1.5 $
+our $VERSION = '0.04'; # $Revision: 1.7 $
 
 my $Help    = 0;
 my $List    = 0;
@@ -22,7 +23,7 @@ my $Path    = ".";
 my $Plugin  = "Zip",
 
 my $Quiet   = 0;
-
+my $ShowVer = 0;
 
 unless (GetOptions("type=s"   => \$Type,
                    "name=s"   => \$Name,  
@@ -33,8 +34,20 @@ unless (GetOptions("type=s"   => \$Type,
                    "help|h"   => \$Help,
                    "list|l"   => \$List,
                    "quiet|q"  => \$Quiet,
+                   "version|v" => \$ShowVer,
 		  )) {
   $Help = 1;
+}
+
+if ($ShowVer) {
+  my $v = $Mozilla::Backup::VERSION;
+  print << "VER";
+mozback $VERSION (Mozilla::Backup $v)
+Copyright (c) 2005 Robert Rothenberg. All rights reserved.
+This program is free software; you can redistribute it and/or
+modify it under the same terms as Perl itself.
+
+VER
 }
 
 if ($Help) {
@@ -49,6 +62,7 @@ Usage: mozback [options]
   --name       name of profile (defaults to "$Name")
   --path       path to save backup (defaults to current directory)
   --quiet      quite mode (no output)
+  --version    show version and license
 USAGE
   exit(1);
 }
@@ -77,11 +91,12 @@ elsif ($Backup) {
   );
   if ($moz->type(type => $Type)->profile_exists(name => $Name)) {
     if (-d $Path) {
-      $moz->backup_profile(
+      my $r = $moz->backup_profile(
         type => $Type,
         name => $Name,
         destination => $Path
       );
+      croak "$r\n" unless ($r);
     } else {
       croak msg( level => "error", message => "$Path does not exist\n" );
     }
@@ -98,11 +113,12 @@ elsif ($Restore) {
   );
   if (-e $Path) {
     if ($moz->type_exists( type => $Type )) {
-      $moz->restore_profile(
+      my $r = $moz->restore_profile(
         archive_path => $Path,
         type => $Type,
         name => $Name,
       );
+      croak "$r\n" unless ($r);
     }
     else {
       croak msg( level => "error", message => "$Type is not a valid type\n" );

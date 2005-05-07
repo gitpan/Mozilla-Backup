@@ -1,5 +1,29 @@
 Revision history for Perl extension Mozilla::Backup.
 
+0.06  Sat May  7 2005
+	- replaced Params::Validate with Params::Smart in constructors
+	- revised internals for handling errors
+	- Params::Smart 0.05 required
+	- Compress::Zlib and IO::Zlib are now explicitly required
+          (for use by Archive::Tar)
+	- plugins verify status of archive before operations
+	- option to show version and license info in mozback script
+	- plugins have smarter error handling/return values
+	- methods return failure codes rather than croaking
+	- uses Return::Value
+	- _find_profile_path is now (publicly) documented
+	- added support for Beonex profile
+	- updated POD for README generation
+	- improved code to find profile on Windows 9x/NT 
+	- added code to munge prefs.js after restore_profile
+	- uses IO::File
+	- uses Regexp::Common
+	- updated default excludes
+	- updated documentation
+	- set perms in FileCopy
+	- added example to FileCopy
+	- changed tests
+
 0.05  Sun Apr 24 2005
 	* moved various functions from *::Backup to *::ProfilesIni
 	  (using AUTOLOAD for deprecated function calls)

@@ -2,15 +2,21 @@
 
 Mozilla::Backup::Plugin::Tar - A tar archive plugin for Mozilla::Backup
 
+=begin readme
+
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
 
   Archive::Tar
+  Compress::Zlib
+  IO::Zlib
   Log::Dispatch;
   Mozilla::Backup
   Params::Smart
-  Params::Validate;
+  Return::Value;
+
+=end readme
 
 =head1 SYNOPSIS
 
@@ -37,14 +43,18 @@ use Archive::Tar;
 use Carp;
 use File::Spec;
 use Log::Dispatch;
-use Params::Smart 0.03;
-use Params::Validate qw( :all );
+use Params::Smart 0.04;
+use Return::Value;
+
+# Actually, IO::Zlib is not required unless we want to support the
+# gzip option. However, Archive::Zip requires Compress::Zlib, which
+# IO::Zlib requires. So we may as well require it.
 
 # require Mozilla::Backup;
 
-# $Revision: 1.3 $
+# $Revision: 1.11 $
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =item new
 
@@ -70,30 +80,40 @@ Compress the archive when saving. Enabled by default.
 
 =cut
 
-my %ALLOWED_OPTIONS = (
-    log       => {
-                   required => 1,
-                   isa      => 'Log::Dispatch',
-                 },
-    debug     => {
-                   default  => 0,
-		   type     => BOOLEAN,
-                 },
-    compress  => {
-                   default  => 1,
-		   type     => BOOLEAN,
-                 },
+my @ALLOWED_OPTIONS = (
+   {
+     name     => "log",
+     default  => Log::Dispatch->new(),
+     callback => sub {
+       my ($self, $name, $log) = @_;
+       croak "invalid log sink"
+	 unless ((ref $log) && $log->isa("Log::Dispatch"));
+       return $log;
+     },
+     name_only => 1,
+     required  => 1,
+   },
+   {
+     name      => "compress",
+     default   => 1,
+     name_only => 1,
+   },
+   {
+     name      => "debug",
+     default   => 0,
+     name_only => 1,
+   },
 );
 
 sub new {
   my $class = shift || __PACKAGE__;
-
-  my %args  = validate( @_, \%ALLOWED_OPTIONS);
+  my %args  = Params(@ALLOWED_OPTIONS)->args(@_);
 
   my $self  = {
     log       => $args{log},
     debug     => $args{debug},
     compress  => $args{compress},
+    status    => "closed",
   };
 
   $Archive::Tar::DEBUG = 1 if ($self->{debug});
@@ -119,16 +139,19 @@ true if all of the arguments are allowable options for the constructor.
 sub allowed_options {
   my $class = shift || __PACKAGE__;
   my %args = Params(qw( ?*options ))->args(@_);
+
+  my %allowed = map { $_->{name} => 1, } @ALLOWED_OPTIONS;
+
   my @opts = @{$args{options}}, if ($args{options});
   if (@opts) {
     my $allowed = 1;
     while ($allowed && (my $opt = shift @opts)) {
-      $allowed = $allowed && $ALLOWED_OPTIONS{$opt};
+      $allowed = $allowed && $allowed{$opt};
     }
     return $allowed;
   }
   else {
-    return (keys %ALLOWED_OPTIONS);
+    return (keys %allowed);
   }
 }
 
@@ -171,11 +194,23 @@ sub open_for_backup {
   my %args = Params(qw( path ?*options ))->args(@_);
   my $path = $args{path};
 
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log( 
+      "cannot create archive: status is \"$self->{status}\"" );
+  }
+
   $self->{path} = $path;
   $self->{opts} = $args{options};
 
   $self->_log( level => "debug", message => "creating archive $path\n" );
-  return $self->{tar} = Archive::Tar->new();
+
+  if ($self->{tar} = Archive::Tar->new()) {
+    $self->{status} = "open for backup";
+    return success;
+  }
+  else {
+    return failure $self->_log( "unable to create archive" );
+  }
 }
 
 =item open_for_restore
@@ -193,11 +228,22 @@ sub open_for_restore {
   my %args = Params(qw( path ?*options ))->args(@_);
   my $path = $args{path};
 
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log(
+      "cannot open archive: status is \"$self->{status}\"" );
+  }
+
   $self->{path} = $path;
   $self->{opts} = $args{options};
 
   $self->_log( level => "debug", message => "opening archive $path\n" );
-  return $self->{tar} = Archive::Tar->new( $path, $self->{compress} );
+  if ($self->{tar} = Archive::Tar->new( $path, $self->{compress} )) {
+    $self->{status} = "open for restore";
+    return success;
+  }
+  else {
+    return failure $self->_log( "unable to open archive" );
+  }
 }
 
 =item get_contents
@@ -210,6 +256,12 @@ Returns a list of files in the archive.
 
 sub get_contents {
   my $self = shift;
+
+  unless ($self->{status} ne "closed") {
+    return failure $self->_log( 
+      "cannot get contents: status is \"$self->{status}\"" );
+  }
+
   return $self->{tar}->list_files();
 }
 
@@ -226,6 +278,11 @@ sub backup_file {
   my $self = shift;
   my %args = Params(qw( file ?internal  ))->args(@_);
 
+  unless ($self->{status} eq "open for backup") {
+    return failure $self->_log( 
+      "cannot backup file: status is \"$self->{status}\"" );
+  }
+
   my $file = $args{file};                 # actual file
   my $name = $args{internal} || $file;    # name in archive
 
@@ -233,10 +290,15 @@ sub backup_file {
   if ($self->{tar}->add_files($file)) {
     my $nix_name = $file;
       $nix_name =~ tr|\\|\/|;
-    return $self->{tar}->rename($nix_name, $name);
+    if ($self->{tar}->rename($nix_name, $name)) {
+      return success;
+    }
+    else {
+      return failure $self->_log( "rename failed for $nix_name to $name" );
+    }
   } else {
     # TODO - error in debug
-    return;
+    return failure $self->_log( "unable to add file" );
   }
 }
 
@@ -252,14 +314,18 @@ sub restore_file {
   my $self = shift;
   my %args = Params(qw( internal file ))->args(@_);
 
+  unless ($self->{status} eq "open for restore") {
+    return failure $self->_log( 
+      "cannot restore file: status is \"$self->{status}\"" );
+  }
+
   my $file = $args{internal};
   my $dest = $args{file} ||
-    croak $self->_log( level => "error",
-      message => "no destination specified" );
+    return failure $self->_log( 
+      "no destination specified" );
 
   unless (-d $dest) {
-    croak $self->_log( level => "error",
-      message => "destination does not exist");
+    return failure $self->_log( "destination does not exist" );
   }
 
   my $path = File::Spec->catfile($dest, $file);
@@ -270,7 +336,10 @@ sub restore_file {
 
   $self->_log( level => "info", message => "restoring $file\n" );
   $self->{tar}->extract_file($file, $path);
-  return (-e $path);
+  unless (-e $path) {
+    return failure $self->_log( "extract failed" );
+  }
+  return success;
 }
 
 =item close_backup
@@ -283,9 +352,23 @@ Closes the backup.
 
 sub close_backup {
   my $self = shift;
+
+  unless ($self->{status} eq "open for backup") {
+    return failure $self->_log( 
+      "cannot close archive: status is \"$self->{status}\"" );
+  }
+
+
   my $path = $self->{path};
   $self->_log( level => "debug", message => "saving archive: $path\n" );
-  $self->{tar}->write( $path, $self->{compress} );
+
+  if ($self->{tar}->write( $path, $self->{compress} )) {
+    $self->{status} = "closed";
+    return success;
+  }
+  else {
+    return failure $self->_log( "write $path failed" );
+  }
 }
 
 =item close_restore
@@ -298,16 +381,27 @@ Closes the restore.
 
 sub close_restore {
   my $self = shift;
+
+  unless ($self->{status} eq "open for restore") {
+    return failure $self->_log( 
+      "cannot close archive: status is \"$self->{status}\"" );
+  }
+
   $self->_log( level => "debug", message => "closing archive\n" );
+  $self->{status} = "closed";
+  return success;
 }
 
 =begin internal
 
 =item _log
 
-  $plugin->_log( level => $level, $message => $message );
+  $moz->_log( $message, $level );
 
-Logs an event to the dispatcher.
+  $moz->_log( $message => $message, level => $level );
+
+Logs an event to the dispatcher. If C<$level> is unspecified, "error"
+is assumed.
 
 =end internal
 
@@ -315,16 +409,17 @@ Logs an event to the dispatcher.
 
 sub _log {
   my $self = shift;
-  my %p    = @_;
-  my $msg  = $p{message};
+  my %args = Params(qw( message ?level="error" ))->args(@_);
+  my $msg  = $args{message};
 
   # we want log messages to always have a newline, but not necessarily
-  # the returned value that we pass to carp and croak
+  # the returned value that we pass to carp/croak/return value
 
-  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
-  $self->{log}->log(%p);
-  return $msg;    # when used by carp and croak
+  $args{message} .= "\n" unless ($args{message} =~ /\n$/);
+  $self->{log}->log(%args) if ($self->{log});
+  return $msg;    # when used by carp/croak/return value
 }
+
 
 1;
 

@@ -3,7 +3,7 @@
 # Test script for pseudo-profile. This allows us to test a lot of functions
 # which manipulate profiles, but to test them in a safe place.
 
-# $Revision: 1.4 $
+# $Revision: 1.5 $
 
 use strict;
 use Test::More;
@@ -39,7 +39,7 @@ ok(-d $ProfilesDir, "Profiles subdir");
 SKIP: {
   skip "NA in Windows", 1 if ($^O eq "MSWin32");
   my $mode = (stat($ProfilesDir))[2] & 07777;
-  printf STDERR "\x23 %04o\n", $mode;
+#  printf STDERR "\x23 %04o\n", $mode;
   ok($mode == 0700, "Profiles perms");
 }
 

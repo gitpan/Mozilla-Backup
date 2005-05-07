@@ -1,6 +1,6 @@
 #!/usr/bin/perl
 
-# $Revision: 1.13 $
+# $Revision: 1.14 $
 
 use strict;
 use Test::More tests => 15;
@@ -66,7 +66,7 @@ foreach my $type (qw( pseudo )) {
       if ($moz->type($type)->profile_is_locked($name));
 
     my $file = $moz->backup_profile($type,$name,$tmpdir,$arch);
-    ok(-e $file, "backup_profile");
+    ok(-e $file, "backup_profile $file");
 
     my $verify = File::Spec->catfile($tmpdir,$arch);
     ok(-e $verify, "file is where expected to be");

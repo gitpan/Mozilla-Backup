@@ -2,6 +2,8 @@
 
 Mozilla::Backup::Plugin::FileCopy - A file copy plugin for Mozilla::Backup
 
+=begin readme
+
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
@@ -9,8 +11,11 @@ The following non-core modules are required:
   File::Copy;
   Log::Dispatch;
   Mozilla::Backup
+  Mozilla::ProfilesIni;
   Params::Smart
-  Params::Validate;
+  Return::Value;
+
+=end readme
 
 =head1 SYNOPSIS
 
@@ -39,14 +44,15 @@ use File::Copy;
 use File::Find;
 use File::Spec;
 use Log::Dispatch;
-use Params::Smart 0.03;
-use Params::Validate qw( :all );
+use Mozilla::ProfilesIni;
+use Params::Smart 0.04;
+use Return::Value;
 
 # require Mozilla::Backup;
 
-# $Revision: 1.9 $
+# $Revision: 1.16 $
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 =item new
 
@@ -69,27 +75,37 @@ The debug flag from L<Mozilla::Backup>. This is not used at the moment.
 =cut
 
 # TODO - option to preserve file perms/ownership, which should be
-# enabled by default.
+# enabled by default.  Possibly specify a callback to run on each
+# copied file?
 
-my %ALLOWED_OPTIONS = (
-    log       => {
-                   required => 1,
-                   isa      => 'Log::Dispatch',
-                 },
-    debug     => {
-                   default  => 0,
-		   type     => BOOLEAN,
-                 },
+my @ALLOWED_OPTIONS = (
+   {
+     name     => "log",
+     default  => Log::Dispatch->new(),
+     callback => sub {
+       my ($self, $name, $log) = @_;
+       croak "invalid log sink"
+	 unless ((ref $log) && $log->isa("Log::Dispatch"));
+       return $log;
+     },
+     name_only => 1,
+     required  => 1,
+   },
+   {
+     name      => "debug",
+     default   => 0,
+     name_only => 1,
+   },
 );
 
 sub new {
   my $class = shift || __PACKAGE__;
-
-  my %args  = validate( @_, \%ALLOWED_OPTIONS);
+  my %args  = Params(@ALLOWED_OPTIONS)->args(@_);
 
   my $self  = {
     log       => $args{log},
     debug     => $args{debug},
+    status    => "closed",
   };
 
   return bless $self, $class;
@@ -112,16 +128,19 @@ true if all of the arguments are allowable options for the constructor.
 sub allowed_options {
   my $class = shift || __PACKAGE__;
   my %args = Params(qw( ?*options ))->args(@_);
+
+  my %allowed = map { $_->{name} => 1, } @ALLOWED_OPTIONS;
+
   my @opts = @{$args{options}}, if ($args{options});
   if (@opts) {
     my $allowed = 1;
     while ($allowed && (my $opt = shift @opts)) {
-      $allowed = $allowed && $ALLOWED_OPTIONS{$opt};
+      $allowed = $allowed && $allowed{$opt};
     }
     return $allowed;
   }
   else {
-    return (keys %ALLOWED_OPTIONS);
+    return (keys %allowed);
   }
 }
 
@@ -156,6 +175,12 @@ configuration parameters.
 sub open_for_backup {
   my $self = shift;
   my %args = Params(qw( path ?*options ))->args(@_);
+
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log( 
+      "cannot create archive: status is \"$self->{status}\"" );
+  }
+
   my $path = File::Spec->rel2abs($args{path});
 
   $self->{opts} = $args{options};
@@ -164,7 +189,15 @@ sub open_for_backup {
 
   mkdir $path;
   chmod 0700, $path;
-  return $self->{path} = _catdir($path);
+  if ($self->{path} = _catdir($path)) {
+    $self->{status} = "open for backup";
+    return success;
+  }
+  else {
+    return failure $self->_log( 
+      "unable to create path: \"$path\"", );
+  }
+
 }
 
 =item open_for_restore
@@ -180,8 +213,21 @@ Opens an existing archive for restoring the profile.
 sub open_for_restore {
   my $self = shift;
   my %args = Params(qw( path ?*options ))->args(@_);
+
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log( 
+      "cannot open archive: status is \"$self->{status}\"" );
+  }
+
   my $path = File::Spec->rel2abs($args{path});
-  return $self->{path} = _catdir($path);
+
+  if ($self->{path} = _catdir($path)) {
+    $self->{status} = "open for restore";
+    return success;
+  }
+  else {
+    return failure $self->_log( "cannot find archive: \"$path\"" );
+  }
 }
 
 =item get_contents
@@ -194,6 +240,11 @@ Returns a list of files in the archive.
 
 sub get_contents {
   my $self = shift;
+
+  unless ($self->{status} ne "closed") {
+    return failure $self->_log( 
+      "cannot get contents: status is \"$self->{status}\"" );
+  }
 
   my $path  = $self->{path};
   my @files = ( );
@@ -236,6 +287,11 @@ sub backup_file {
   my $self = shift;
   my %args = Params(qw( file ?internal  ))->args(@_);
 
+  unless ($self->{status} eq "open for backup") {
+    return failure $self->_log( 
+      "cannot backup file: status is \"$self->{status}\"" );
+  }
+
   my $file = File::Spec->canonpath($args{file}); # actual file
   my $name = $args{internal} || $file;    # name in archive
 
@@ -248,7 +304,8 @@ sub backup_file {
       mkdir $dest;
       chmod 0700, $dest;
     }
-    return _catdir($dest);
+    return failure "directory $dest not found" unless (_catdir($dest));
+    return success;
   } elsif (-r $file) {
     my $dest = File::Spec->catfile($self->{path}, $name);
     if ($self->_create_dir($name)) {
@@ -258,13 +315,12 @@ sub backup_file {
       # TODO - options to copy permissions
 
       copy($file, $dest)
-	|| croak $self->_log( level => "error",
-			      message => "copying failed: $!" );
+	|| return failure $self->_log( "copying failed: $!" );
     }
-    return _catfile($dest);
+    return failure "file $dest not found" unless (_catfile($dest));
+    return success;
   } else {
-    croak $self->_log( level => "critical",
-		       message => "cannot find file $file" );
+    return failure $self->_log( "cannot find file $file" );
   }
 }
 
@@ -314,14 +370,17 @@ sub restore_file {
   my $self = shift;
   my %args = Params(qw( internal file ))->args(@_);
 
+  unless ($self->{status} eq "open for restore") {
+    return failure $self->_log( 
+      "cannot restore file: status is \"$self->{status}\"" );
+  }
+
   my $file = $args{internal};
   my $dest = $args{file} ||
-    croak $self->_log( level => "error",
-      message => "no destination specified" );
+    return failure $self->_log( "no destination specified" );
 
   unless (-d $dest) {
-    croak $self->_log( level => "error",
-      message => "destination does not exist");
+    return failure $self->_log( "destination does not exist" );
   }
 
   my $path = File::Spec->catfile($dest, $file);
@@ -340,7 +399,8 @@ sub restore_file {
       mkdir $path;
       chmod 0700, $path;
     }
-    return _catdir($path);
+    return failure "directory $path not found" unless (_catdir($path));
+    return success;
   } elsif (-r $src) {
     if ($self->_create_dir($file, $dest)) {
       $self->_log( level => "debug", message => "copying $file\n" );    
@@ -348,13 +408,13 @@ sub restore_file {
       # TODO - options to copy permissions
 
       copy($src, $path)
-	|| croak $self->_log( level => "error",
-			      message => "copying failed: $!" );
+	|| return failure $self->_log( "copying failed: $!" );
+      chmod 0600, $path;
     }
-    return _catfile($path);
+    return failure "file $path not found" unless (_catfile($path));
+    return success;
   } else {
-    croak $self->_log( level => "critical",
-		       message => "cannot find file $src" );
+    return failure $self->_log( "cannot find file $src" );
   }
 }
 
@@ -370,6 +430,8 @@ sub close_backup {
   my $self = shift;
   my $path = $self->{path};
   $self->_log( level => "debug", message => "closing archive\n" );
+  $self->{status} = "closed";
+  return success;
 }
 
 
@@ -384,6 +446,8 @@ Closes the restore.
 sub close_restore {
   my $self = shift;
   $self->_log( level => "debug", message => "closing archive\n" );
+  $self->{status} = "closed";
+  return success;
 }
 
 
@@ -391,9 +455,31 @@ sub close_restore {
 
 =item _log
 
-  $plugin->_log( level => $level, $message => $message );
+  $moz->_log( $message, $level );
 
-Logs an event to the dispatcher.
+  $moz->_log( $message => $message, level => $level );
+
+Logs an event to the dispatcher. If C<$level> is unspecified, "error"
+is assumed.
+
+=end internal
+
+=cut
+
+sub _log {
+  my $self = shift;
+  my %args = Params(qw( message ?level="error" ))->args(@_);
+  my $msg  = $args{message};
+
+  # we want log messages to always have a newline, but not necessarily
+  # the returned value that we pass to carp/croak/return value
+
+  $args{message} .= "\n" unless ($args{message} =~ /\n$/);
+  $self->{log}->log(%args) if ($self->{log});
+  return $msg;    # when used by carp/croak/return value
+}
+
+=begin internal
 
 =item _catdir
 
@@ -403,38 +489,36 @@ Logs an event to the dispatcher.
 
 =cut
 
-
-sub _log {
-  my $self = shift;
-  my %p    = @_;
-  my $msg  = $p{message};
-
-  # we want log messages to always have a newline, but not necessarily
-  # the returned value that we pass to carp and croak
-
-  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
-  $self->{log}->log(%p);
-  return $msg;    # when used by carp and croak
-}
-
 sub _catdir {
-  if ($_[0]) { # otherwise blank "" is translated to root directory
-    my $path = File::Spec->catdir(@_);
-    return (-d $path) ? $path : undef;
-  }
-  else {
-    return;
-  }
+  goto \&Mozilla::ProfilesIni::_catdir;
 }
 
 sub _catfile {
-  my $path = File::Spec->catfile(@_);
-  return (-r $path) ? $path : undef;
+  goto \&Mozilla::ProfilesIni::_catfile;
 }
 
 1;
 
 =back
+
+=head1 EXAMPLES
+
+=head2 Creating archvies other than zip or tar.gz
+
+If you would like to create backups in a format for which no plugin
+is available, you can use Mozilla::Backup::Plugin::FileCopy with a
+system call to the appropriate archiver. For example,
+
+  $moz = Mozilla::backup->new(
+    plugin => "Mozilla::Backup::Plugin::FileCopy",
+  );
+
+  $dest = $moz->backup_profile(
+    type => "firefox",
+    name => "default",
+  );
+
+  system("tar cf - $dest |bzip2 - > firefox-default-profile.tar.bz2");
 
 =head1 AUTHOR
 

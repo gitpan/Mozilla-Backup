@@ -2,6 +2,8 @@
 
 Mozilla::ProfilesIni - Manipulation of Mozilla F<profiles.ini> files
 
+=begin readme
+
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
@@ -9,7 +11,9 @@ The following non-core modules are required:
   Config::IniFiles
   Log::Dispatch
   Params::Smart
-  Params::Validate
+  Return::Value
+
+=end readme
 
 =head1 SYNOPSIS
 
@@ -37,23 +41,23 @@ require 5.006;
 use strict;
 use warnings;
 
-# TODO - move much of the Profiles handling code to this module.
-
 use Carp;
 use Config::IniFiles;
 use File::Find;
 use File::Spec;
 use Log::Dispatch;
-use Params::Smart 0.03;
-use Params::Validate qw( :all );
+use Params::Smart 0.04;
+use Return::Value;
 
-# $Revision: 1.8 $
+# $Revision: 1.14 $
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =over
 
 =item new
+
+  $ini = Mozilla::ProfilesIni->new( $path );
 
   $ini = Mozilla::ProfilesIni->new( path => $path, %options );
 
@@ -64,7 +68,7 @@ The following options are supported:
 =item path
 
 Path to where the F<profiles.ini> file is (excluding the actual
-F<profiles.ini> file).
+F<profiles.ini> file).  This is a required option.
 
 =item log
 
@@ -85,24 +89,35 @@ Create a new F<profile.ini> file in L</path>.
 sub new {
   my $class = shift || __PACKAGE__;
 
-  my %args  = validate( @_, {
-    log       => {
-                   default  => Log::Dispatch->new,
-                   isa      => 'Log::Dispatch',
-                 },
-    debug     => {
-                   default  => 0,
-                   type     => BOOLEAN,
-                 },
-    path      => {
-                   required => 1,
-                   type     => SCALAR,
-                 },
-    create    => {
-                   default  => 0,
-                   type     => BOOLEAN,
-                 },
-  } );
+  my %args  = Params(
+   {
+     name      => "path",
+     required  => 1,
+     name_only => 1,
+   },
+   {
+     name     => "log",
+     default  => Log::Dispatch->new(),
+     callback => sub {
+       my ($self, $name, $log) = @_;
+       croak "invalid log sink"
+	 unless ((ref $log) && $log->isa("Log::Dispatch"));
+       return $log;
+     },
+     name_only => 1,
+     required  => 0,
+   },
+   {
+     name      => "debug",
+     default   => 0,
+     name_only => 1,
+   },
+   {
+     name      => "create",
+     default   => 0,
+     name_only => 1,
+   },
+  )->args(@_);
   
   my $self  = {
     profiles  => { },
@@ -117,10 +132,12 @@ sub new {
   bless $self, $class;
 
   if ($self->{create}) {
-    $self->_create_profile_ini( path => $args{path}, ignore => 1 );
+    my $r = $self->_create_profile_ini( path => $args{path}, ignore => 1 );
+    croak $r unless ($r);
   }
 
-  $self->_read_profile_ini( path => $args{path} );
+  my $r = $self->_read_profile_ini( path => $args{path} );
+  croak $r unless ($r);
 
   return $self;
 }
@@ -149,17 +166,17 @@ sub _create_profile_ini {
   my $path = File::Spec->rel2abs($args{path});
 
   unless (-d $path) {
-    croak $self->_log( level => "error",
-      message => "cannot access psuedo profile directory: $path" );
+    return failure $self->_log( 
+      "cannot access psuedo profile directory: $path" );
   }
 
   my $ini_file = File::Spec->catfile($path, "profiles.ini" );
   if (-e $ini_file) {
     if ($args{ignore}) {
-      return;
+      return success;
     } else {
-      croak $self->_log( level => "error",
-        message => "a profile exists already at $path" );
+      return failure $self->_log(
+        "a profile exists already at $path" );
     }
   } else {
     my $cfg = Config::IniFiles->new();
@@ -167,15 +184,16 @@ sub _create_profile_ini {
     $cfg->newval("General", "StartWithLastProfile", "");
 
     unless ($cfg->WriteConfig( $ini_file )) {
-      croak $self->_log( level => "error",
-        message => "unable to create pseudo configuration" );
+      return failure $self->_log(
+        "unable to create pseudo configuration" );
     }
 
     unless (-e $ini_file) {
-      croak $self->_log( level => "error",
-	message => "unexpected error in creating pseudo configuration" );
+      return failure $self->_log(
+	"unexpected error in creating pseudo configuration" );
     }
   }
+  return success;
 }
 
 =begin internal
@@ -223,8 +241,8 @@ sub _read_profile_ini {
 	  };
 
           unless ($name = $cfg->val("Profile$i", "Name")) {
-	    croak $self->_log( level => "error",
-	      message => "No name is defined for Profile$i");
+	    return failure $self->_log(
+	      "No name is defined for Profile$i");
           }
 
           # In nsToolkitProfileService.cpp, flags are "1" or ""
@@ -236,9 +254,9 @@ sub _read_profile_ini {
 	  $self->{profiles}->{$name} = $data;
 
 	} else {
-          # Do we carp instead of croak if there's bad data in profiles.ini?
-	  croak $self->_log( level => "error",
-	    message => "Bad Path: $profile_path not a directory");
+          # Do we warn instead of exit if there's bad data in profiles.ini?
+	  return failure $self->_log(
+	    "Bad Path: $profile_path not a directory");
 	}
 	$i++;
       }
@@ -246,13 +264,14 @@ sub _read_profile_ini {
         $self->{profiles}->{$name}->{Default} = "1";
       }
     } else {
-      croak $self->_log( level => "error",
-       message => "Bad INI file: $ini_file");
+      return failure $self->_log(
+       "Bad INI file: $ini_file");
     }
   } else {
-    croak $self->_log( level => "error",
-      message => "cannot find profiles.ini in $path");
+    return failure $self->_log(
+      "Cannot find profiles.ini in $path" );
   }
+  return success;
 }
 
 =item create_profile
@@ -291,8 +310,8 @@ sub create_profile {
       $self->_log( level => "info",
         message => "creating directory $prof\n" );
       unless (mkdir $prof) {
-	croak $self->_log( level => "error",
-          message => "unable to create directory $prof" );      
+	return failure $self->_log(
+          "unable to create directory $prof" );      
       }
 
       # TODO - option whether to set perms; also a portable chmod
@@ -310,7 +329,6 @@ sub create_profile {
       do {
         $dir = "";
         for (1..8) { $dir .= ("a".."z","0".."9")[int(rand(36))]; }
-        # TODO - verify the profile naming scheme
         $dir .= "." . $name;
         $path = File::Spec->catdir($prof, $dir);
       } while (-d $path);
@@ -319,8 +337,8 @@ sub create_profile {
     $self->_log( level => "info",
         message => "creating directory $path\n" );
     unless (mkdir $path) {
-	croak $self->_log( level => "error",
-          message => "unable to create directory $path" );
+	return failure $self->_log(
+          "unable to create directory $path" );
     }
     chmod 0700, $path;
 
@@ -330,8 +348,8 @@ sub create_profile {
 
     foreach (keys %{$self->{profiles}}) {
       if ($self->{profiles}->{$_}->{ProfileId} eq $id) {
-        croak $self->_log( level => "error",
-          message => "Profile Id conflict" );
+        return failure $self->_log(
+          "Profile Id conflict" );
       }
     }
 
@@ -376,14 +394,15 @@ sub create_profile {
     # absolute paths when rewritten!
 
     unless ($cfg->RewriteConfig) {
-      croak $self->_log( level => "error",
-        message => "Unable to update INI file" );
+      return failure $self->_log(
+        "Unable to update INI file" );
     }
   }
   else {
-    croak $self->_log( level => "error",
-      message => "cannot find INI file $ini_file" );
+    return failure $self->_log(
+      "cannot find INI file $ini_file" );
   }
+  return success;
 }
 
 =item ini_file
@@ -551,8 +570,6 @@ sub _catfile {
   return (-r $path) ? $path : undef;
 }
 
-=begin internal
-
 =item _find_profile_path
 
   $path = _find_profile_path( home => $home, type => $type );
@@ -568,8 +585,6 @@ Returns C<undef> if no path for that type was found.
 
 In cases where profile paths cannot be found, use the C<MOZILLA_HOME>
 or C<appname_HOME> environment variable to indicate where it is.
-
-=end internal
 
 =cut
 
@@ -588,12 +603,21 @@ sub _find_profile_path {
   # The MOZILLA_HOME environment variables are for OS/2, but putting
   # them here first allows one to override settings.
 
+  # Problem? On some OSs, these may indicate where Mozilla binaries are,
+  # and not profiles!
+
   if ($path = _catdir($ENV{uc($type)."_HOME"})) {
     return $path;
   }
   if ($path = _catdir($ENV{MOZILLA_HOME}, ucfirst($type))) {
     return $path;
   }
+#   if ($path = _catdir($ENV{MOZILLA_FIVE_HOME})) {
+#     return $path;
+#   }
+#   if ($path = _catdir($ENV{MOZILLA_FIVE_HOME}, ucfirst($type))) {
+#     return $path;
+#   }
 
   if ($path = _catdir($home, "\.$type")) {
     return $path;
@@ -656,9 +680,12 @@ sub _find_profile_path {
 
 =item _log
 
-  $ini->_log( level => $level, $message => $message );
+  $moz->_log( $message, $level );
 
-Logs an event to the dispatcher.
+  $moz->_log( $message => $message, level => $level );
+
+Logs an event to the dispatcher. If C<$level> is unspecified, "error"
+is assumed.
 
 =end internal
 
@@ -666,17 +693,16 @@ Logs an event to the dispatcher.
 
 sub _log {
   my $self = shift;
-  my %p    = @_;
-  my $msg  = $p{message};
+  my %args = Params(qw( message ?level=error ))->args(@_);
+  my $msg  = $args{message};
 
   # we want log messages to always have a newline, but not necessarily
-  # the returned value that we pass to carp and croak
+  # the returned value that we pass to carp/croak/return value
 
-  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
-  $self->{log}->log(%p);
-  return $msg;    # when used by carp and croak
+  $args{message} .= "\n" unless ($args{message} =~ /\n$/);
+  $self->{log}->log(%args) if ($self->{log});
+  return $msg;    # when used by carp/croak/return value
 }
-
 
 =back
 

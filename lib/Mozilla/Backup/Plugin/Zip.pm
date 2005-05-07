@@ -2,15 +2,20 @@
 
 Mozilla::Backup::Plugin::Zip - A zip archive plugin for Mozilla::Backup
 
+=begin readme
+
 =head1 REQUIREMENTS
 
 The following non-core modules are required:
 
   Archive::Zip
+  Compress::Zlib
   Log::Dispatch;
   Mozilla::Backup
   Params::Smart
-  Params::Validate;
+  Return::Value
+
+=end readme
 
 =head1 SYNOPSIS
 
@@ -25,6 +30,12 @@ The following non-core modules are required:
 This is a plugin for Mozilla::Backup which allows backups to be saved
 as zip files.
 
+Methods will return a true value on sucess, or false on failure. (The
+"false" value is overloaded to return a string value with the error
+code.)
+
+Methods are outlined below:
+
 =over
 
 =cut
@@ -33,18 +44,18 @@ package Mozilla::Backup::Plugin::Zip;
 
 use strict;
 
-use Archive::Zip;
+use Archive::Zip qw( :ERROR_CODES );
 use Carp;
 use File::Spec;
 use Log::Dispatch;
-use Params::Smart 0.03;
-use Params::Validate qw( :all );
+use Params::Smart 0.04;
+use Return::Value;
 
 # require Mozilla::Backup;
 
-# $Revision: 1.17 $
+# $Revision: 1.27 $
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 =item new
 
@@ -75,39 +86,48 @@ See the L<Archive::Zip> documentation for more information on levels.
 
 =cut
 
-my %ALLOWED_OPTIONS = (
-    log       => {
-                   required => 1,
-                   isa      => 'Log::Dispatch',
-                 },
-    debug     => {
-                   default  => 0,
-		   type     => BOOLEAN,
-                 },
-
-    # This options is intentionally called 'compression' instead of
-    # 'compress' so as not to be confused with option in Tar plugin
-
-    compression => {
-                   default  => 6,
-                   type     => SCALAR,
-                   callbacks => {
-                     'valid_range' => sub {
-                       return (($_[0] >= 0) && ($_[0] <= 9));
-                     },
-                   },
-                 },
+my @ALLOWED_OPTIONS = (
+   {
+     name     => "log",
+     default  => Log::Dispatch->new(),
+     callback => sub {
+       my ($self, $name, $log) = @_;
+       croak "invalid log sink"
+	 unless ((ref $log) && $log->isa("Log::Dispatch"));
+       return $log;
+     },
+     name_only => 1,
+     required  => 1,
+   },
+   {
+     name      => "compression",
+     default   => 6,
+     name_only => 1,
+     callback  => sub {
+       my ($self, $name, $value) = @_;
+       # TODO - check if an integer?
+       croak "expected value between 0 and 9"
+	 unless (($value >= 0) && ($value <= 9));
+       return $value;
+     },
+   },
+   {
+     name      => "debug",
+     default   => 0,
+     name_only => 1,
+   },
 );
+
 
 sub new {
   my $class = shift || __PACKAGE__;
-
-  my %args  = validate( @_, \%ALLOWED_OPTIONS);
+  my %args  = Params(@ALLOWED_OPTIONS)->args(@_);
 
   my $self  = {
     log       => $args{log},
     debug     => $args{debug},
     compression => $args{compression},
+    status    => "closed",
   };
 
   return bless $self, $class;
@@ -131,16 +151,19 @@ true if all of the arguments are allowable options for the constructor.
 sub allowed_options {
   my $class = shift || __PACKAGE__;
   my %args = Params(qw( ?*options ))->args(@_);
+
+  my %allowed = map { $_->{name} => 1, } @ALLOWED_OPTIONS;
+
   my @opts = @{$args{options}}, if ($args{options});
   if (@opts) {
     my $allowed = 1;
     while ($allowed && (my $opt = shift @opts)) {
-      $allowed = $allowed && $ALLOWED_OPTIONS{$opt};
+      $allowed = $allowed && $allowed{$opt};
     }
     return $allowed;
   }
   else {
-    return (keys %ALLOWED_OPTIONS);
+    return (keys %allowed);
   }
 }
 
@@ -179,11 +202,23 @@ sub open_for_backup {
   my %args = Params(qw( path ?*options ))->args(@_);
   my $path = $args{path};
 
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log(
+      "cannot create archive: status is \"$self->{status}\"" );
+  }
+
   $self->{path} = $path;
   $self->{opts} = $args{options};
 
   $self->_log( level => "debug", message => "creating archive $path\n" );
-  return $self->{zip} = Archive::Zip->new();
+
+  if ($self->{zip} = Archive::Zip->new()) {
+    $self->{status} = "open for backup";
+    return success;
+  }
+  else {
+    return failure $self->_log( "unable to create archive" );
+  }
 }
 
 =item open_for_restore
@@ -201,23 +236,43 @@ sub open_for_restore {
   my %args = Params(qw( path ?*options ))->args(@_);
   my $path = $args{path};
 
+  unless ($self->{status} eq "closed") {
+    return failure $self->_log( 
+      "cannot open archive: status is \"$self->{status}\"" );
+  }
+
   $self->{path} = $path;
   $self->{opts} = $args{options};
 
   $self->_log( level => "debug", message => "opening archive $path\n" );
-  return $self->{zip} = Archive::Zip->new( $path );
+
+  if ($self->{zip} = Archive::Zip->new( $path )) {
+    $self->{status} = "open for restore";
+    return success;
+  }
+  else {
+    return failure $self->_log( "unable to open archive" );
+  }
 }
 
 =item get_contents
 
   @files = $plugin->get_contents;
 
-Returns a list of files in the archive.
+Returns a list of files in the archive. Assumes it has been opened for
+restoring (may or may not work for archives opened for backup;
+applications are expected to track files backed up separately).
 
 =cut
 
 sub get_contents {
   my $self = shift;
+
+  unless ($self->{status} ne "closed") {
+    return failure $self->_log( 
+      "cannot get contents: status is \"$self->{status}\"" );
+  }
+
   return $self->{zip}->memberNames();
 }
 
@@ -226,13 +281,18 @@ sub get_contents {
   $plugin->backup_file( $local_file, $internal_name );
 
 Backs up the file in the archive, using C<$internal_name> as the
-name in the archive.
+name in the archive.  Assumes it has been opened for backup.
 
 =cut
 
 sub backup_file {
   my $self = shift;
   my %args = Params(qw( file ?internal  ))->args(@_);
+
+  unless ($self->{status} eq "open for backup") {
+    return failure $self->_log( 
+      "cannot backup file: status is \"$self->{status}\"" );
+  }
 
   my $file = $args{file};                 # actual file
   my $name = $args{internal} || $file;    # name in archive
@@ -247,7 +307,8 @@ sub backup_file {
 
   $plugin->restore_file( $internal_name, $local_file );
 
-Restores the file from the archive.
+Restores the file from the archive.  Assumes it has been opened for
+restoring.
 
 =cut
 
@@ -255,14 +316,17 @@ sub restore_file {
   my $self = shift;
   my %args = Params(qw( internal file ))->args(@_);
 
+  unless ($self->{status} eq "open for restore") {
+    return failure $self->_log( 
+      "cannot restore file: status is \"$self->{status}\"" );
+  }
+
   my $file = $args{internal};
   my $dest = $args{file} ||
-    croak $self->_log( level => "error",
-      message => "no destination specified" );
+    return failure $self->_log( "no destination specified" );
 
   unless (-d $dest) {
-    croak $self->_log( level => "error",
-      message => "destination does not exist");
+    return failure $self->_log( "destination does not exist" );
   }
 
   my $path = File::Spec->catfile($dest, $file);
@@ -273,7 +337,10 @@ sub restore_file {
 
   $self->_log( level => "info", message => "restoring $file\n" );
   $self->{zip}->extractMember($file, $path);
-  return (-e $path);
+  unless (-e $path) {
+    return failure $self->_log( "extract failed" );
+  }
+  return success;
 }
 
 =item close_backup
@@ -286,9 +353,21 @@ Closes the backup.
 
 sub close_backup {
   my $self = shift;
+
+  unless ($self->{status} eq "open for backup") {
+    return failure $self->_log( 
+      "cannot close archive: status is \"$self->{status}\"" );
+  }
+
   my $path = $self->{path};
   $self->_log( level => "debug", message => "saving archive: $path\n" );
-  $self->{zip}->writeToFileNamed( $path );
+  if ($self->{zip}->writeToFileNamed( $path ) == AZ_OK) {
+    $self->{status} = "closed";
+    return success;
+  }
+  else {
+    return failure $self->_log( "writeToFileNamed $path failed" );
+  }
 }
 
 =item close_restore
@@ -301,16 +380,27 @@ Closes the restore.
 
 sub close_restore {
   my $self = shift;
+
+  unless ($self->{status} eq "open for restore") {
+    return failure $self->_log( 
+      "cannot close archive: status is \"$self->{status}\"" );
+  }
+
   $self->_log( level => "debug", message => "closing archive\n" );
+  $self->{status} = "closed";
+  return success;
 }
 
 =begin internal
 
 =item _log
 
-  $plugin->_log( level => $level, $message => $message );
+  $moz->_log( $message, $level );
 
-Logs an event to the dispatcher.
+  $moz->_log( $message => $message, level => $level );
+
+Logs an event to the dispatcher. If C<$level> is unspecified, "error"
+is assumed.
 
 =end internal
 
@@ -318,20 +408,30 @@ Logs an event to the dispatcher.
 
 sub _log {
   my $self = shift;
-  my %p    = @_;
-  my $msg  = $p{message};
+  my %args = Params(qw( message ?level="error" ))->args(@_);
+  my $msg  = $args{message};
 
   # we want log messages to always have a newline, but not necessarily
-  # the returned value that we pass to carp and croak
+  # the returned value that we pass to carp/croak/return value
 
-  $p{message} .= "\n" unless ($p{message} =~ /\n$/);
-  $self->{log}->log(%p);
-  return $msg;    # when used by carp and croak
+  $args{message} .= "\n" unless ($args{message} =~ /\n$/);
+  $self->{log}->log(%args) if ($self->{log});
+  return $msg;    # when used by carp/croak/return value
 }
+
 
 1;
 
 =back
+
+=head1 KNOWN ISSUES
+
+=head2 MozBackup Compatability
+
+The "MozBackup" utility (L<http://backup.jasnapaka.com>) produces zip archives
+(with the F<pcv> extension) which should be compatible with this module,
+although support for handling the F<indexfiles.txt> has not been added (it
+should probably be exluded in a restore).
 
 =head1 AUTHOR
 

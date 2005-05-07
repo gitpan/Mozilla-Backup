@@ -6,33 +6,35 @@ REQUIREMENTS
 
       Archive::Tar
       Archive::Zip
+      Compress::Zlib
       Config::IniFiles
       File::Temp
+      IO::Zlib
       Log::Dispatch
       Module::Pluggable
       Params::Smart
-      Params::Validate
-      Regexp::Assemble
+      Regexp::Assemble;
+      Regexp::Common
+      Return::Value
+      Test::More
 
-    The Archive::* modules are used by their respective plugins.
+    The Archive::* and *::Zlib modules are used by their respective plugins.
 
-Installation
-    Installation can be done using the traditional Makefile.PL or the
-    newer Build.PL methods.
+INSTALLATION
+    Installation can be done using the traditional Makefile.PL or the newer
+    Build.PL methods.
 
     Using Makefile.PL:
 
       perl Makefile.PL
-      make
       make test
       make install
 
-    (On Windows platforms you should use nmake instead.)
+    (On Windows platforms you should use `nmake' instead.)
 
     Using Build.PL (if you have Module::Build installed):
 
       perl Build.PL
-      perl Build
       perl Build test
       perl Build install
 
@@ -41,67 +43,69 @@ SYNOPSIS
       $file = $moz->backup_profile("firefox", "default");
 
 DESCRIPTION
-    This package provides a simple interface to back up the profiles of
-    Mozilla-related applications such as Firefox and Thunderbird.
+    This package provides a simple interface to back up and restore the
+    profiles of Mozilla-related applications such as Firefox or Thunderbird.
 
     More details are available in the module documentation.
 
-Compatability with Earlier Versions
-    The interface has been changed from version 0.04. Various methods
-    for querying profile information were moved into the *::ProfilesIni
-     module.  Code that was of the form
-
-      $moz->method($type,$name);
-
-    should be changed to
-
-      $moz->type($type)->method($name);
-
-    The older method calls should still work, but are deprecated and
-    will issue warnings.
-
-    See the module documentation and revision history (below) for more
-    information.
-
 REVISION HISTORY
-    The following changes have been made since the previous release:
+    The following changes have been made since the last release:
 
-    * profile.ini-handling code was moded to Mozilla::ProfilesIni
-      and methods were revised accordingly.
+    0.06  Sat May  7 2005
+            - replaced Params::Validate with Params::Smart in constructors
+            - revised internals for handling errors
+            - Params::Smart 0.05 required
+            - Compress::Zlib and IO::Zlib are now explicitly required
+                  (for use by Archive::Tar)
+            - plugins verify status of archive before operations
+            - option to show version and license info in mozback script
+            - plugins have smarter error handling/return values
+            - methods return failure codes rather than croaking
+            - uses Return::Value
+            - _find_profile_path is now (publicly) documented
+            - added support for Beonex profile
+            - updated POD for README generation
+            - improved code to find profile on Windows 9x/NT 
+            - added code to munge prefs.js after restore_profile
+            - uses IO::File
+            - uses Regexp::Common
+            - updated default excludes
+            - updated documentation
+            - set perms in FileCopy
+            - added example to FileCopy
+            - changed tests
 
-    * Added Tar plugin to produce .tar or .tar.gz archives.
+    Details can be found in the Changes file.
 
-    * Added ability to control compression level in .zip archives
-
-    * Fixed bugs associated with adding new profiles and changing
-      the default profile.
-
-    * Improved profile lock detection
-
-    * Ability to specify an exlusion list for backups and restores.
-
-    * Added tests
-
-    Details can be found in the Changes file.    
-
-CAVEATS
+KNOWN ISSUES
     This module is a prototype. Use at your own risk!
 
     Not all of the profile types have been tested, and are implemented based
     on information gleaned from sources which may or may not be accurate.
 
+    The current version of this module only copies files and does little
+    manipulation of any files, except for the profiles.ini and prefs.js to
+    update some pathnames. This means that information specific to a profile
+    on a machine such as extensions and themes is kept as-is, which may not
+    be a good thing if a profile is restored to a different location or
+    machine, or even application.
+
+    (By default cache files are excluded from backups; there may be problems
+    if cache files are restored to incompatible applications or machines.)
+
 SEE ALSO
-    Mozilla web site at <http://www.mozilla.org>.
+    Mozilla web site at http://www.mozilla.org.
 
 AUTHOR
     Robert Rothenberg <rrwo at cpan.org>
 
   Suggestions and Bug Reporting
-    Feedback is always welcome. Please use the CPAN Request Tracker at
-    <http://rt.cpan.org> to submit bug reports.
 
-  There is now a SourceForge project for this module at
-  <http://sourceforge.net/projects/mozilla-backup/>
+    Feedback is always welcome. Please use the CPAN Request Tracker at
+    http://rt.cpan.org to submit bug reports.
+
+    There is now a SourceForge project for this module at
+    http://mozilla-backup.sourceforge.net/.
 
 LICENSE
     Copyright (c) 2005 Robert Rothenberg. All rights reserved. This program
